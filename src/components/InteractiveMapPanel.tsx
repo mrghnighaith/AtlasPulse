@@ -63,6 +63,7 @@ interface InteractiveMapPanelProps {
   savedPlaces: LivePlaceItem[];
   onToggleSavePlace: (place: LivePlaceItem) => void;
   onAskAboutPlace: (place: LivePlaceItem) => void;
+  onViewReviews?: (place: LivePlaceItem) => void;
   routePlaceIds?: string[];
   onRoutePlaceIdsChange?: (ids: string[]) => void;
 }
@@ -82,6 +83,7 @@ interface PlaceMarkerItemProps {
   onSelect: (place: LivePlaceItem) => void;
   onCloseInfoWindow: () => void;
   onAskAboutPlace: (place: LivePlaceItem) => void;
+  onViewReviews?: (place: LivePlaceItem) => void;
   routeStopIndex?: number;
   routeColor?: string;
 }
@@ -93,6 +95,7 @@ const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
   onSelect,
   onCloseInfoWindow,
   onAskAboutPlace,
+  onViewReviews,
   routeStopIndex,
   routeColor,
 }) => {
@@ -159,7 +162,7 @@ const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
                 <span>{place.distanceKm} km away</span>
               )}
             </div>
-            <div className="pt-1.5 flex items-center gap-2">
+            <div className="pt-1.5 flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => onAskAboutPlace(place)}
@@ -167,6 +170,17 @@ const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
               >
                 Ask Chatbot
               </button>
+              {onViewReviews && (
+                <button
+                  type="button"
+                  onClick={() => onViewReviews(place)}
+                  className="px-2 py-1 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded hover:bg-amber-100 transition-colors inline-flex items-center gap-1"
+                  title="View top-rated user reviews summary"
+                >
+                  <Star className="w-3 h-3 fill-amber-400 text-amber-500" />
+                  <span>Reviews</span>
+                </button>
+              )}
               {place.googleMapsURI && (
                 <a
                   href={place.googleMapsURI}
@@ -174,7 +188,7 @@ const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
                   rel="noopener noreferrer"
                   className="px-2 py-1 text-xs font-medium text-slate-700 border border-slate-200 rounded hover:bg-slate-100 transition-colors inline-flex items-center gap-1"
                 >
-                  <span>Google Maps</span>
+                  <span>Maps</span>
                   <ExternalLink className="w-3 h-3" />
                 </a>
               )}
@@ -200,6 +214,7 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
   savedPlaces,
   onToggleSavePlace,
   onAskAboutPlace,
+  onViewReviews,
   routePlaceIds,
   onRoutePlaceIdsChange,
 }) => {
@@ -925,6 +940,7 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
                 onSelect={(p) => onSelectPlace(p)}
                 onCloseInfoWindow={() => onSelectPlace(null)}
                 onAskAboutPlace={onAskAboutPlace}
+                onViewReviews={onViewReviews}
                 routeStopIndex={stopIdx}
                 routeColor={routeColorHex}
               />
@@ -1323,6 +1339,19 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
                   </button>
 
                   <div className="flex items-center gap-1.5 shrink-0">
+                    {onViewReviews && (
+                      <button
+                        type="button"
+                        onClick={() => onViewReviews(place)}
+                        aria-label={`View reviews summary for ${place.displayName}`}
+                        className="px-2.5 py-1 text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 rounded transition-colors flex items-center gap-1 whitespace-nowrap"
+                        title="View top-rated user reviews summary via Google Places Details API"
+                      >
+                        <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                        <span>Reviews</span>
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       onClick={() => onAskAboutPlace(place)}

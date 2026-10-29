@@ -10,6 +10,7 @@ import {
   Cloud,
   CheckCircle2,
   Route,
+  Star,
 } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
 import {
@@ -35,6 +36,8 @@ import {
 } from './types/places';
 import { ChatThreadPanel } from './components/ChatThreadPanel';
 import { InteractiveMapPanel } from './components/InteractiveMapPanel';
+import { AtlasPulseLogo } from './components/AtlasPulseLogo';
+import { PlaceReviewsSummary } from './components/live-places';
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
@@ -88,6 +91,7 @@ export default function App() {
   );
   const [livePlaces, setLivePlaces] = useState<LivePlaceItem[]>([]);
   const [selectedPlace, setSelectedPlace] = useState<LivePlaceItem | null>(null);
+  const [reviewModalPlace, setReviewModalPlace] = useState<LivePlaceItem | null>(null);
   const [routePlaceIds, setRoutePlaceIds] = useState<string[]>([]);
   const [savedPlaces, setSavedPlaces] = useState<LivePlaceItem[]>(() => {
     try {
@@ -311,16 +315,17 @@ export default function App() {
 
       {/* Top Bar Contract: Strictly 1 row, 3 zones separated by gap-8 */}
       <header className="flex items-center justify-between gap-8 px-6 py-3.5 bg-white border-b border-slate-200 shrink-0">
-        {/* Zone 1: Single text element wordmark */}
+        {/* Zone 1: Custom Brand Logo & Wordmark */}
         <a
           href="#workspace"
           onClick={(e) => {
             e.preventDefault();
             setActiveTab('workspace');
           }}
-          className="font-display text-lg font-bold tracking-tight text-slate-950 whitespace-nowrap shrink-0"
+          className="flex items-center shrink-0 hover:opacity-90 transition-opacity"
+          aria-label="AtlasPulse Home"
         >
-          AtlasPulse
+          <AtlasPulseLogo size="sm" variant="badge" />
         </a>
 
         {/* Zone 2: 4 clean single-line text navigation links */}
@@ -534,6 +539,7 @@ export default function App() {
                     `Tell me more about ${place.displayName} at ${place.formattedAddress}, including what it is known for and any visitor tips.`
                   );
                 }}
+                onViewReviews={setReviewModalPlace}
                 routePlaceIds={routePlaceIds}
                 onRoutePlaceIdsChange={setRoutePlaceIds}
               />
@@ -611,6 +617,15 @@ export default function App() {
                           </td>
                           <td className="py-3 px-4 text-right">
                             <div className="inline-flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setReviewModalPlace(place)}
+                                className="px-2.5 py-1 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded hover:bg-amber-100 flex items-center gap-1 transition-colors"
+                                title="View top-rated user reviews summary via Google Places Details API"
+                              >
+                                <Star className="w-3 h-3 fill-amber-400 text-amber-500" />
+                                <span>Reviews</span>
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => {
@@ -856,6 +871,15 @@ export default function App() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setReviewModalPlace(place)}
+                          className="px-2.5 py-1.5 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-md hover:bg-amber-100 flex items-center gap-1 transition-colors"
+                          title="View top-rated user reviews summary via Google Places Details API"
+                        >
+                          <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                          <span>Reviews</span>
+                        </button>
                         {place.googleMapsURI && (
                           <a
                             href={place.googleMapsURI}
@@ -879,6 +903,26 @@ export default function App() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Place Reviews Summary Modal (Google Places Details API) */}
+          {reviewModalPlace && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150">
+              <div className="w-full max-w-2xl max-h-[90vh] flex flex-col">
+                <PlaceReviewsSummary
+                  place={reviewModalPlace}
+                  onClose={() => setReviewModalPlace(null)}
+                  onAskChatAboutReviews={(place, summaryData) => {
+                    setReviewModalPlace(null);
+                    setActiveTab('workspace');
+                    void handleSendMessage(
+                      `Based on recent Google Places reviews for ${place.displayName} (${summaryData.averageRating.toFixed(1)}/5 from ${summaryData.totalRatingsCount.toLocaleString()} reviews): ${summaryData.generatedSummary}. What specific dishes, features, or tips do reviewers recommend most?`
+                    );
+                  }}
+                  isModal={true}
+                />
+              </div>
             </div>
           )}
         </APIProvider>

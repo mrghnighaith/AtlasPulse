@@ -19,6 +19,7 @@ import {
   formatCoordinate,
 } from '../utils/spatialParser';
 import { ChatMessage } from '../types/places';
+import { AtlasPulseLogo } from './AtlasPulseLogo';
 
 interface ChatThreadPanelProps {
   messages: ChatMessage[];
@@ -169,16 +170,19 @@ export const ChatThreadPanel: React.FC<ChatThreadPanelProps> = ({
       {/* Top Control Header */}
       <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/70 space-y-2.5 shrink-0">
         <div className="flex items-center justify-between gap-2">
-          <div>
-            <h2 className="font-display text-sm font-semibold text-slate-900">
-              Spatial Grounding Chat
-            </h2>
-            <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-0.5">
-              <span>{activeCityName}</span>
-              <span aria-hidden="true">·</span>
-              <span className="font-mono tabular-nums">
-                {formatCoordinate(center.lat, center.lng)}
-              </span>
+          <div className="flex items-center gap-2.5">
+            <AtlasPulseLogo size="xs" variant="icon-only" withPulseEffect={false} />
+            <div>
+              <h2 className="font-display text-sm font-semibold text-slate-900">
+                Spatial Grounding Chat
+              </h2>
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-0.5">
+                <span>{activeCityName}</span>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono tabular-nums">
+                  {formatCoordinate(center.lat, center.lng)}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -296,6 +300,9 @@ export const ChatThreadPanel: React.FC<ChatThreadPanelProps> = ({
             >
               {/* Unboxed Metadata Kicker */}
               <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mb-1 px-0.5">
+                {!isUser && (
+                  <AtlasPulseLogo size="xs" variant="icon-only" withPulseEffect={false} className="w-3.5 h-3.5" />
+                )}
                 <span className="font-medium text-slate-700">
                   {isUser ? 'You' : activeRole.label}
                 </span>
