@@ -1,0 +1,143 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile containing authenticated user identity and settings",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique user ID matching auth.uid",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the user",
+          "maxLength": 256
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the user",
+          "maxLength": 128
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Profile picture avatar URL",
+          "maxLength": 1024
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp or server timestamp of profile creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp or server timestamp of last profile update"
+        }
+      },
+      "required": ["id", "email"]
+    },
+    "SavedPlace": {
+      "title": "SavedPlace",
+      "description": "A Google Maps place saved to the user personal itinerary collection",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique Place ID or coordinate-derived key",
+          "maxLength": 128
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Place name from Google Maps",
+          "maxLength": 256
+        },
+        "formattedAddress": {
+          "type": "string",
+          "description": "Formatted physical address",
+          "maxLength": 512
+        },
+        "lat": {
+          "type": "number",
+          "description": "Latitude coordinate"
+        },
+        "lng": {
+          "type": "number",
+          "description": "Longitude coordinate"
+        },
+        "rating": {
+          "type": "number",
+          "description": "Google Maps star rating (1.0 to 5.0)"
+        },
+        "userRatingCount": {
+          "type": "number",
+          "description": "Total user review count"
+        },
+        "primaryTypeDisplayName": {
+          "type": "string",
+          "description": "Category name for place",
+          "maxLength": 128
+        },
+        "googleMapsURI": {
+          "type": "string",
+          "description": "Official Google Maps URL link",
+          "maxLength": 1024
+        },
+        "websiteURI": {
+          "type": "string",
+          "description": "Business official website URL",
+          "maxLength": 1024
+        },
+        "savedAt": {
+          "type": "string",
+          "description": "Timestamp when the place was bookmarked"
+        }
+      },
+      "required": ["id", "displayName"]
+    },
+    "ChatSession": {
+      "title": "ChatSession",
+      "description": "Saved spatial concierge chat session history",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique session ID",
+          "maxLength": 128
+        },
+        "cityName": {
+          "type": "string",
+          "description": "Active city name for the conversation",
+          "maxLength": 128
+        },
+        "messageCount": {
+          "type": "number",
+          "description": "Total number of messages in session"
+        },
+        "lastMessage": {
+          "type": "string",
+          "description": "Snippet of latest message",
+          "maxLength": 512
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last activity timestamp"
+        }
+      },
+      "required": ["id", "cityName"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile collection storing individual user data"
+    },
+    "/users/{userId}/saved_places/{placeId}": {
+      "schema": "SavedPlace",
+      "description": "Subcollection of places bookmarked by this user"
+    },
+    "/users/{userId}/chat_sessions/{sessionId}": {
+      "schema": "ChatSession",
+      "description": "Subcollection of saved chat threads by this user"
+    }
+  }
+}

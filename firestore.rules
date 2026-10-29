@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global deny-by-default safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['id', 'email'])
+        && data.keys().hasOnly(['id', 'email', 'displayName', 'photoURL', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.email is string && data.email.size() <= 256
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 128))
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 1024))
+        && (!('createdAt' in data) || data.createdAt is string)
+        && (!('updatedAt' in data) || data.updatedAt is string);
+    }
+
+    function isValidSavedPlace(data) {
+      return data.keys().hasAll(['id', 'displayName'])
+        && data.keys().hasOnly([
+          'id', 'displayName', 'formattedAddress', 'lat', 'lng',
+          'rating', 'userRatingCount', 'primaryTypeDisplayName',
+          'googleMapsURI', 'websiteURI', 'savedAt'
+        ])
+        && data.id is string && data.id.size() <= 128
+        && data.displayName is string && data.displayName.size() <= 256
+        && (!('formattedAddress' in data) || (data.formattedAddress is string && data.formattedAddress.size() <= 512))
+        && (!('lat' in data) || data.lat is number)
+        && (!('lng' in data) || data.lng is number)
+        && (!('rating' in data) || data.rating is number)
+        && (!('userRatingCount' in data) || data.userRatingCount is number)
+        && (!('primaryTypeDisplayName' in data) || (data.primaryTypeDisplayName is string && data.primaryTypeDisplayName.size() <= 128))
+        && (!('googleMapsURI' in data) || (data.googleMapsURI is string && data.googleMapsURI.size() <= 1024))
+        && (!('websiteURI' in data) || (data.websiteURI is string && data.websiteURI.size() <= 1024))
+        && (!('savedAt' in data) || data.savedAt is string);
+    }
+
+    function isValidChatSession(data) {
+      return data.keys().hasAll(['id', 'cityName'])
+        && data.keys().hasOnly(['id', 'cityName', 'messageCount', 'lastMessage', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.cityName is string && data.cityName.size() <= 128
+        && (!('messageCount' in data) || data.messageCount is number)
+        && (!('lastMessage' in data) || (data.lastMessage is string && data.lastMessage.size() <= 512))
+        && (!('updatedAt' in data) || data.updatedAt is string);
+    }
+
+    // User profile documents (isolated to document owner)
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) && incoming().id == userId;
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming())
+        && incoming().id == existing().id
+        && incoming().email == existing().email;
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // User saved places subcollection
+      match /saved_places/{placeId} {
+        allow get: if isOwner(userId) && isValidId(placeId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(placeId) && isValidSavedPlace(incoming());
+        allow update: if isOwner(userId) && isValidId(placeId) && isValidSavedPlace(incoming()) && incoming().id == existing().id;
+        allow delete: if isOwner(userId) && isValidId(placeId);
+      }
+
+      // User chat sessions subcollection
+      match /chat_sessions/{sessionId} {
+        allow get: if isOwner(userId) && isValidId(sessionId);
+        allow list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(sessionId) && isValidChatSession(incoming());
+        allow delete: if isOwner(userId) && isValidId(sessionId);
+      }
+    }
+  }
+}

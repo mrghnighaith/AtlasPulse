@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
+import { AuthProvider } from './context/AuthContext.tsx';
 import './index.css';
 
 // Tier 1: Maps JavaScript API & Map Loading Level Quota Defense
@@ -16,4 +17,9 @@ console.error = (...args: unknown[]) => {
   }
 };
 
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(
+  <AuthProvider>
+    <App />
+  </AuthProvider>
+);
+
