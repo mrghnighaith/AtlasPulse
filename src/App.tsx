@@ -481,7 +481,6 @@ export default function App() {
           apiKey={GOOGLE_MAPS_API_KEY}
           language="en"
           region="US"
-          internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
         >
           {/* Split Chat + Interactive Google Map Workspace */}
           <div

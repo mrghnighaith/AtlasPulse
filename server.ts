@@ -6,15 +6,17 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import {
   buildSystemInstruction,
-  ChatbotRoleId,
   derivePlaceSearchQuery,
   determineGroundingStrategy,
   extractGroundingSources,
+} from './src/utils/spatialParser.ts';
+import type {
+  ChatbotRoleId,
   GeminiModelId,
   GroundedSource,
   GroundingMode,
   LatLngLiteral,
-} from './src/utils/spatialParser';
+} from './src/utils/spatialParser.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
