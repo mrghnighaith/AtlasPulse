@@ -1,6 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import { APIProvider } from '@vis.gl/react-google-maps';
-import { ExternalLink, MapPin, Globe, Trash2, MessageSquare, LogOut, Cloud, CheckCircle2 } from 'lucide-react';
+import {
+  ExternalLink,
+  MapPin,
+  Globe,
+  Trash2,
+  MessageSquare,
+  LogOut,
+  Cloud,
+  CheckCircle2,
+  Route,
+} from 'lucide-react';
 import { useAuth } from './context/AuthContext';
 import {
   savePlaceToFirestore,
@@ -78,6 +88,7 @@ export default function App() {
   );
   const [livePlaces, setLivePlaces] = useState<LivePlaceItem[]>([]);
   const [selectedPlace, setSelectedPlace] = useState<LivePlaceItem | null>(null);
+  const [routePlaceIds, setRoutePlaceIds] = useState<string[]>([]);
   const [savedPlaces, setSavedPlaces] = useState<LivePlaceItem[]>(() => {
     try {
       const raw = localStorage.getItem('atlaspulse_saved_places');
@@ -524,6 +535,8 @@ export default function App() {
                     `Tell me more about ${place.displayName} at ${place.formattedAddress}, including what it is known for and any visitor tips.`
                   );
                 }}
+                routePlaceIds={routePlaceIds}
+                onRoutePlaceIdsChange={setRoutePlaceIds}
               />
             </div>
           </div>
@@ -750,24 +763,39 @@ export default function App() {
                       : 'Bookmarked Google Maps locations saved locally. Sign in with Google to sync across devices.'}
                   </p>
                 </div>
-                {savedPlaces.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const names = savedPlaces
-                        .map((p) => p.displayName)
-                        .join(', ');
-                      setActiveTab('workspace');
-                      void handleSendMessage(
-                        `Create a logical walking or transit order to visit my saved places: ${names}.`
-                      );
-                    }}
-                    className="px-3.5 py-2 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    <span>Ask Chatbot to Plan Route</span>
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {savedPlaces.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRoutePlaceIds(savedPlaces.map((p) => p.id));
+                        setActiveTab('workspace');
+                      }}
+                      className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-xs"
+                    >
+                      <Route className="w-3.5 h-3.5" />
+                      <span>Draw Route on Map</span>
+                    </button>
+                  )}
+                  {savedPlaces.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const names = savedPlaces
+                          .map((p) => p.displayName)
+                          .join(', ');
+                        setActiveTab('workspace');
+                        void handleSendMessage(
+                          `Create a logical walking or transit order to visit my saved places: ${names}.`
+                        );
+                      }}
+                      className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Ask Chatbot to Plan Route</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               {!user && (

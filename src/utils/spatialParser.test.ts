@@ -9,6 +9,7 @@ import {
   buildSystemInstruction,
   resolveMapStyleConfig,
   MAP_STYLE_OPTIONS,
+  calculateMultiStopMetrics,
 } from './spatialParser';
 
 test('resolveMapStyleConfig resolves standard, roadmap, satellite, and hybrid styles', () => {
@@ -105,3 +106,23 @@ test('buildSystemInstruction includes active role, city, and coordinates', () =>
   assert.ok(instruction.includes('London, UK'));
   assert.ok(instruction.includes('51.5074'));
 });
+
+test('calculateMultiStopMetrics handles zero, single, and multiple coordinates', () => {
+  const empty = calculateMultiStopMetrics([]);
+  assert.equal(empty.totalDistanceKm, 0);
+  assert.equal(empty.totalDurationMinutes, 0);
+
+  const ferryBuilding = { lat: 37.7955, lng: -122.3937 };
+  const unionSquare = { lat: 37.7879, lng: -122.4075 };
+  const coitTower = { lat: 37.8024, lng: -122.4058 };
+
+  const walk = calculateMultiStopMetrics([ferryBuilding, unionSquare, coitTower], 'WALKING');
+  assert.ok(walk.totalDistanceKm > 2.5 && walk.totalDistanceKm < 4.0);
+  assert.ok(walk.totalDurationMinutes > 20);
+  assert.ok(walk.formattedDistance.includes('km'));
+  assert.ok(walk.formattedDuration.includes('min'));
+
+  const drive = calculateMultiStopMetrics([ferryBuilding, unionSquare, coitTower], 'DRIVING');
+  assert.ok(drive.totalDurationMinutes < walk.totalDurationMinutes);
+});
+

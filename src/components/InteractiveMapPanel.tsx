@@ -19,14 +19,29 @@ import {
   BookmarkCheck,
   MapPin,
   Layers,
+  Route as RouteIcon,
+  Footprints,
+  Car,
+  Bike,
+  Bus,
+  Check,
+  ArrowUp,
+  ArrowDown,
+  X,
+  Maximize2,
+  Trash2,
+  AlertCircle,
 } from 'lucide-react';
 import {
   calculateHaversineDistanceKm,
+  calculateMultiStopMetrics,
   formatCoordinate,
   LatLngLiteral,
   MAP_STYLE_OPTIONS,
   MapStyleId,
   resolveMapStyleConfig,
+  ROUTE_COLOR_PRESETS,
+  TravelMode,
 } from '../utils/spatialParser';
 import {
   CITY_VIEWPORT_PRESETS,
@@ -48,6 +63,8 @@ interface InteractiveMapPanelProps {
   savedPlaces: LivePlaceItem[];
   onToggleSavePlace: (place: LivePlaceItem) => void;
   onAskAboutPlace: (place: LivePlaceItem) => void;
+  routePlaceIds?: string[];
+  onRoutePlaceIdsChange?: (ids: string[]) => void;
 }
 
 const QUICK_PLACE_CATEGORIES = [
@@ -65,6 +82,8 @@ interface PlaceMarkerItemProps {
   onSelect: (place: LivePlaceItem) => void;
   onCloseInfoWindow: () => void;
   onAskAboutPlace: (place: LivePlaceItem) => void;
+  routeStopIndex?: number;
+  routeColor?: string;
 }
 
 const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
@@ -74,25 +93,34 @@ const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
   onSelect,
   onCloseInfoWindow,
   onAskAboutPlace,
+  routeStopIndex,
+  routeColor,
 }) => {
   const [markerRef, marker] = useAdvancedMarkerRef();
+  const isRouteStop = routeStopIndex !== undefined;
 
   return (
     <>
       <AdvancedMarker
         ref={markerRef}
         position={place.location}
-        title={place.displayName}
+        title={isRouteStop ? `Stop ${routeStopIndex + 1}: ${place.displayName}` : place.displayName}
         onClick={() => onSelect(place)}
       >
         <Pin
-          background={isSelected ? '#1d4ed8' : '#0f172a'}
-          borderColor={isSelected ? '#93c5fd' : '#475569'}
+          background={
+            isRouteStop
+              ? routeColor || '#2563eb'
+              : isSelected
+              ? '#1d4ed8'
+              : '#0f172a'
+          }
+          borderColor={isSelected || isRouteStop ? '#ffffff' : '#475569'}
           glyphColor={'#ffffff'}
-          scale={isSelected ? 1.25 : 1.05}
+          scale={isSelected ? 1.25 : isRouteStop ? 1.2 : 1.05}
         >
           <span className="font-mono text-[10px] font-semibold">
-            {index + 1}
+            {isRouteStop ? `S${routeStopIndex + 1}` : index + 1}
           </span>
         </Pin>
       </AdvancedMarker>
@@ -104,6 +132,14 @@ const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
           onCloseClick={onCloseInfoWindow}
         >
           <div className="p-1 text-slate-900 space-y-1.5">
+            {isRouteStop && (
+              <div
+                className="inline-block px-1.5 py-0.5 text-[10px] font-semibold text-white rounded"
+                style={{ backgroundColor: routeColor || '#2563eb' }}
+              >
+                Route Stop #{routeStopIndex + 1}
+              </div>
+            )}
             <div className="font-display font-semibold text-sm text-slate-950">
               {place.displayName}
             </div>
@@ -164,9 +200,12 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
   savedPlaces,
   onToggleSavePlace,
   onAskAboutPlace,
+  routePlaceIds,
+  onRoutePlaceIdsChange,
 }) => {
   const map = useMap();
   const placesLib = useMapsLibrary('places');
+  const routesLib = useMapsLibrary('routes');
 
   const [mapStyle, setMapStyle] = useState<MapStyleId>('standard');
   const activeStyleConfig = resolveMapStyleConfig(mapStyle);
@@ -181,11 +220,223 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
     useRef<google.maps.places.AutocompleteSessionToken | null>(null);
   const lastExecutedQueryRef = useRef<string>('');
 
+  // Route drawing state
+  const polylinesRef = useRef<google.maps.Polyline[]>([]);
+  const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>(
+    routePlaceIds && routePlaceIds.length > 0
+      ? routePlaceIds
+      : savedPlaces.slice(0, 3).map((p) => p.id)
+  );
+  const [travelMode, setTravelMode] = useState<TravelMode>('WALKING');
+  const [routeColorHex, setRouteColorHex] = useState<string>('#2563eb');
+  const [isRouteDrawerOpen, setIsRouteDrawerOpen] = useState(false);
+  const [isComputingRoute, setIsComputingRoute] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const [routeMetrics, setRouteMetrics] = useState<{
+    distanceText: string;
+    durationText: string;
+    stopsCount: number;
+    travelMode: TravelMode;
+    isActualDirections: boolean;
+  } | null>(null);
+
+  // Sync with incoming routePlaceIds prop from parent
+  useEffect(() => {
+    if (routePlaceIds && routePlaceIds.length > 0) {
+      setSelectedRouteIds(routePlaceIds);
+      setIsRouteDrawerOpen(true);
+    }
+  }, [routePlaceIds]);
+
   // Keep imperative Google Map instance synchronized with selected MapStyleConfig
   useEffect(() => {
     if (!map) return;
     map.setMapTypeId(activeStyleConfig.mapTypeId);
   }, [map, activeStyleConfig]);
+
+  // Cleanup polylines on unmount
+  useEffect(() => {
+    return () => {
+      polylinesRef.current.forEach((p) => p.setMap(null));
+      polylinesRef.current = [];
+    };
+  }, []);
+
+  // Clear current active route polyline
+  const clearCurrentRoute = useCallback(() => {
+    polylinesRef.current.forEach((p) => p.setMap(null));
+    polylinesRef.current = [];
+    setRouteMetrics(null);
+    setRouteError(null);
+  }, []);
+
+  // Compute and draw route connecting selected saved places
+  const calculateAndDrawRoute = useCallback(
+    async (
+      placeIds: string[],
+      currentSavedPlaces: LivePlaceItem[],
+      mode: TravelMode,
+      color: string
+    ) => {
+      const placesToConnect = placeIds
+        .map((id) => currentSavedPlaces.find((p) => p.id === id))
+        .filter((p): p is LivePlaceItem => Boolean(p && p.location));
+
+      if (!map || placesToConnect.length < 2) {
+        clearCurrentRoute();
+        return;
+      }
+
+      setIsComputingRoute(true);
+      setRouteError(null);
+      clearCurrentRoute();
+
+      const origin = placesToConnect[0].location;
+      const destination = placesToConnect[placesToConnect.length - 1].location;
+      const intermediates = placesToConnect
+        .slice(1, -1)
+        .map((p) => ({ location: p.location }));
+
+      let directionsSuccess = false;
+
+      // 1. Primary: Use Google Maps Routes API (Route.computeRoutes) per Zero-Legacy SDK standard
+      if (
+        routesLib?.Route &&
+        typeof (routesLib.Route as any).computeRoutes === 'function'
+      ) {
+        try {
+          const req: any = {
+            origin,
+            destination,
+            travelMode: mode,
+            fields: ['path', 'distanceMeters', 'durationMillis', 'viewport', 'legs'],
+          };
+          if (intermediates.length > 0) {
+            req.intermediates = intermediates;
+          }
+
+          const response = await (routesLib.Route as any).computeRoutes(req);
+          if (response?.routes && response.routes.length > 0) {
+            const primaryRoute = response.routes[0];
+            let newPolylines: google.maps.Polyline[] = [];
+
+            if (typeof primaryRoute.createPolylines === 'function') {
+              newPolylines = primaryRoute.createPolylines();
+            } else if (primaryRoute.path) {
+              const poly = new google.maps.Polyline({
+                path: primaryRoute.path,
+                strokeColor: color,
+                strokeWeight: 6,
+                strokeOpacity: 0.85,
+              });
+              newPolylines = [poly];
+            }
+
+            newPolylines.forEach((poly) => {
+              poly.setOptions({
+                strokeColor: color,
+                strokeWeight: 6,
+                strokeOpacity: 0.85,
+              });
+              poly.setMap(map);
+            });
+            polylinesRef.current = newPolylines;
+
+            if (primaryRoute.viewport) {
+              map.fitBounds(primaryRoute.viewport);
+            } else {
+              const bounds = new google.maps.LatLngBounds();
+              placesToConnect.forEach((p) => bounds.extend(p.location));
+              map.fitBounds(bounds, 60);
+            }
+
+            const distKm = (primaryRoute.distanceMeters || 0) / 1000;
+            const durMins = Math.round((primaryRoute.durationMillis || 0) / 60000);
+
+            setRouteMetrics({
+              distanceText:
+                distKm < 1 ? `${Math.round(distKm * 1000)} m` : `${distKm.toFixed(2)} km`,
+              durationText:
+                durMins >= 60
+                  ? `${Math.floor(durMins / 60)} hr ${durMins % 60} min`
+                  : `${durMins} min`,
+              stopsCount: placesToConnect.length,
+              travelMode: mode,
+              isActualDirections: true,
+            });
+
+            directionsSuccess = true;
+          }
+        } catch (err: any) {
+          console.warn('Routes API computeRoutes notice:', err);
+          const msg = String(err?.message || err || '');
+          if (
+            msg.includes('OVER_QUERY_LIMIT') ||
+            msg.includes('RESOURCE_EXHAUSTED') ||
+            msg.includes('429')
+          ) {
+            window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+          }
+        }
+      }
+
+      // 2. High-fidelity Polyline Fallback with calculated multi-stop metrics
+      if (!directionsSuccess) {
+        try {
+          const coords = placesToConnect.map((p) => p.location);
+          const fallbackPolyline = new google.maps.Polyline({
+            path: coords,
+            geodesic: true,
+            strokeColor: color,
+            strokeWeight: 6,
+            strokeOpacity: 0.85,
+            map: map,
+          });
+
+          polylinesRef.current = [fallbackPolyline];
+
+          const bounds = new google.maps.LatLngBounds();
+          coords.forEach((c) => bounds.extend(c));
+          map.fitBounds(bounds, 60);
+
+          const metrics = calculateMultiStopMetrics(coords, mode);
+          setRouteMetrics({
+            distanceText: metrics.formattedDistance,
+            durationText: metrics.formattedDuration,
+            stopsCount: placesToConnect.length,
+            travelMode: mode,
+            isActualDirections: false,
+          });
+        } catch (fallbackErr: any) {
+          setRouteError('Unable to render route polyline on map.');
+        }
+      }
+
+      setIsComputingRoute(false);
+    },
+    [map, routesLib, clearCurrentRoute]
+  );
+
+  // Trigger route computation whenever selection or travel mode or color changes
+  useEffect(() => {
+    if (selectedRouteIds.length >= 2) {
+      void calculateAndDrawRoute(
+        selectedRouteIds,
+        savedPlaces,
+        travelMode,
+        routeColorHex
+      );
+    } else {
+      clearCurrentRoute();
+    }
+  }, [
+    selectedRouteIds,
+    savedPlaces,
+    travelMode,
+    routeColorHex,
+    calculateAndDrawRoute,
+    clearCurrentRoute,
+  ]);
 
   // Execute live Google Maps Places API (New) `Place.searchByText`
   const executeTextSearch = useCallback(
@@ -254,7 +505,7 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
         }
 
         onUpdateLivePlaces(mapped);
-        if (mapped.length > 0 && map) {
+        if (mapped.length > 0 && map && selectedRouteIds.length < 2) {
           map.panTo(mapped[0].location);
         }
       } catch (err: any) {
@@ -272,7 +523,7 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
         setIsSearchingPlaces(false);
       }
     },
-    [placesLib, map, onUpdateLivePlaces]
+    [placesLib, map, onUpdateLivePlaces, selectedRouteIds.length]
   );
 
   // Trigger initial or external search query when placesLib is ready
@@ -411,12 +662,77 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
     );
   };
 
+  // Route stop toggle handlers
+  const handleToggleRoutePlace = (placeId: string) => {
+    setSelectedRouteIds((prev) => {
+      let next: string[];
+      if (prev.includes(placeId)) {
+        next = prev.filter((id) => id !== placeId);
+      } else {
+        next = [...prev, placeId];
+      }
+      onRoutePlaceIdsChange?.(next);
+      return next;
+    });
+  };
+
+  const handleSelectAllSavedPlaces = () => {
+    const allIds = savedPlaces.map((p) => p.id);
+    setSelectedRouteIds(allIds);
+    onRoutePlaceIdsChange?.(allIds);
+  };
+
+  const handleClearRouteSelection = () => {
+    setSelectedRouteIds([]);
+    onRoutePlaceIdsChange?.([]);
+    clearCurrentRoute();
+  };
+
+  const handleMoveStop = (index: number, direction: 'up' | 'down') => {
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= selectedRouteIds.length) return;
+
+    setSelectedRouteIds((prev) => {
+      const next = [...prev];
+      const temp = next[index];
+      next[index] = next[targetIndex];
+      next[targetIndex] = temp;
+      onRoutePlaceIdsChange?.(next);
+      return next;
+    });
+  };
+
+  // Prepare places for rendering
+  const routeStops = selectedRouteIds
+    .map((id) => savedPlaces.find((p) => p.id === id))
+    .filter((p): p is LivePlaceItem => Boolean(p && p.location));
+
+  // Merge live places and saved route places so all route stops are guaranteed pins
+  const routePlaceIndexMap: Record<string, number> = {};
+  routeStops.forEach((p, idx) => {
+    routePlaceIndexMap[p.id] = idx;
+  });
+
+  const allRenderedPlaces = [...livePlaces];
+  for (const stop of routeStops) {
+    if (!allRenderedPlaces.some((p) => p.id === stop.id)) {
+      allRenderedPlaces.push(stop);
+    }
+  }
+
+  const travelModesConfig: { id: TravelMode; label: string; icon: React.ReactNode }[] = [
+    { id: 'WALKING', label: 'Walk', icon: <Footprints className="w-3.5 h-3.5" /> },
+    { id: 'DRIVING', label: 'Drive', icon: <Car className="w-3.5 h-3.5" /> },
+    { id: 'BICYCLING', label: 'Bike', icon: <Bike className="w-3.5 h-3.5" /> },
+    { id: 'TRANSIT', label: 'Transit', icon: <Bus className="w-3.5 h-3.5" /> },
+  ];
+
   return (
     <section
-      aria-label="Interactive Google Map and Live Places Explorer"
-      className="flex flex-col h-full bg-slate-100 overflow-hidden"
+      aria-label="Interactive Google Map, Places Explorer and Route Planner"
+      className="flex flex-col h-full bg-slate-100 overflow-hidden relative"
     >
-      {/* Map Toolbar: City Presets + Live Places Search + Category Filters */}
+      {/* Map Toolbar: City Presets + Search + Style & Route Planner */}
       <div className="p-3 bg-white border-b border-slate-200 space-y-2.5 shrink-0">
         {/* City Preset Switcher & Geolocation */}
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -508,26 +824,47 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
           )}
         </div>
 
-          {/* Category Filter Buttons & Map Style Control Menu */}
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 overflow-x-auto">
-              {QUICK_PLACE_CATEGORIES.map((cat) => (
-                <button
-                  key={cat.label}
-                  type="button"
-                  onClick={() => {
-                    const q = `${cat.query} in ${activePreset.name}`;
-                    lastExecutedQueryRef.current = q;
-                    void executeTextSearch(q, mapCenter);
-                  }}
-                  className="px-2.5 py-1 text-[11px] font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 hover:text-slate-900 rounded-md transition-colors whitespace-nowrap shrink-0"
-                >
-                  {cat.label}
-                </button>
-              ))}
-            </div>
+        {/* Filter Categories + Map Style Controls + Route Planner Toggle */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 overflow-x-auto">
+            {QUICK_PLACE_CATEGORIES.map((cat) => (
+              <button
+                key={cat.label}
+                type="button"
+                onClick={() => {
+                  const q = `${cat.query} in ${activePreset.name}`;
+                  lastExecutedQueryRef.current = q;
+                  void executeTextSearch(q, mapCenter);
+                }}
+                className="px-2.5 py-1 text-[11px] font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 hover:text-slate-900 rounded-md transition-colors whitespace-nowrap shrink-0"
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
 
-            {/* Map Style Control Menu: Standard, Roadmap, Satellite, Hybrid */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Route Planner Drawer Trigger */}
+            <button
+              type="button"
+              onClick={() => setIsRouteDrawerOpen((prev) => !prev)}
+              aria-expanded={isRouteDrawerOpen}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                isRouteDrawerOpen || selectedRouteIds.length >= 2
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <RouteIcon className="w-3.5 h-3.5" />
+              <span>Route Planner</span>
+              {selectedRouteIds.length >= 2 && (
+                <span className="px-1.5 py-0.2 bg-white/20 text-white rounded text-[10px] font-mono">
+                  {selectedRouteIds.length}
+                </span>
+              )}
+            </button>
+
+            {/* Map Style Control Menu */}
             <div
               role="group"
               aria-label="Map style control menu"
@@ -546,7 +883,7 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
                     onClick={() => setMapStyle(styleOpt.id)}
                     aria-pressed={isActive}
                     title={styleOpt.description}
-                    className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                    className={`px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
                       isActive
                         ? 'bg-slate-900 text-white shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -558,6 +895,7 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
               })}
             </div>
           </div>
+        </div>
       </div>
 
       {/* Interactive Google Map Canvas (CF2: explicit height container) */}
@@ -576,18 +914,309 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
           }}
           style={{ width: '100%', height: '100%' }}
         >
-          {livePlaces.map((place, index) => (
-            <PlaceMarkerItem
-              key={place.id}
-              place={place}
-              index={index}
-              isSelected={selectedPlace?.id === place.id}
-              onSelect={(p) => onSelectPlace(p)}
-              onCloseInfoWindow={() => onSelectPlace(null)}
-              onAskAboutPlace={onAskAboutPlace}
-            />
-          ))}
+          {allRenderedPlaces.map((place, index) => {
+            const stopIdx = routePlaceIndexMap[place.id];
+            return (
+              <PlaceMarkerItem
+                key={place.id}
+                place={place}
+                index={index}
+                isSelected={selectedPlace?.id === place.id}
+                onSelect={(p) => onSelectPlace(p)}
+                onCloseInfoWindow={() => onSelectPlace(null)}
+                onAskAboutPlace={onAskAboutPlace}
+                routeStopIndex={stopIdx}
+                routeColor={routeColorHex}
+              />
+            );
+          })}
         </Map>
+
+        {/* Floating Route Metrics HUD (Visible when 2+ stops are connected) */}
+        {routeMetrics && (
+          <div className="absolute top-3 left-3 z-20 bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-xl shadow-lg p-3 max-w-xs space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="w-3 h-3 rounded-full inline-block shrink-0 shadow-xs"
+                  style={{ backgroundColor: routeColorHex }}
+                />
+                <span className="font-display font-semibold text-xs text-slate-900">
+                  Connected Route
+                </span>
+              </div>
+              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold">
+                {routeMetrics.travelMode}
+              </span>
+            </div>
+
+            <div className="flex items-baseline gap-3 text-xs">
+              <div>
+                <span className="text-[10px] text-slate-500 uppercase block">Distance</span>
+                <span className="font-mono font-semibold text-slate-900 text-sm">
+                  {routeMetrics.distanceText}
+                </span>
+              </div>
+              <span aria-hidden="true" className="text-slate-200">|</span>
+              <div>
+                <span className="text-[10px] text-slate-500 uppercase block">Est. Time</span>
+                <span className="font-mono font-semibold text-slate-900 text-sm">
+                  {routeMetrics.durationText}
+                </span>
+              </div>
+              <span aria-hidden="true" className="text-slate-200">|</span>
+              <div>
+                <span className="text-[10px] text-slate-500 uppercase block">Stops</span>
+                <span className="font-mono font-semibold text-slate-900 text-sm">
+                  {routeMetrics.stopsCount}
+                </span>
+              </div>
+            </div>
+
+            <div className="pt-1 flex items-center justify-between gap-1 border-t border-slate-100 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  if (map && routeStops.length > 0) {
+                    const bounds = new google.maps.LatLngBounds();
+                    routeStops.forEach((s) => bounds.extend(s.location));
+                    map.fitBounds(bounds, 60);
+                  }
+                }}
+                className="px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 rounded flex items-center gap-1"
+              >
+                <Maximize2 className="w-3 h-3" />
+                <span>Fit Route</span>
+              </button>
+              <button
+                type="button"
+                onClick={clearCurrentRoute}
+                className="px-2 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50 rounded flex items-center gap-1"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>Clear Polyline</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Route Planner Overlay Drawer */}
+        {isRouteDrawerOpen && (
+          <div
+            role="region"
+            aria-label="Route Planner configuration panel"
+            className="absolute top-3 right-3 z-20 w-80 max-h-[85%] bg-white/95 backdrop-blur-md border border-slate-200 rounded-xl shadow-xl flex flex-col overflow-hidden"
+          >
+            {/* Drawer Header */}
+            <div className="p-3 border-b border-slate-200 flex items-center justify-between gap-2 shrink-0 bg-slate-50/70">
+              <div className="flex items-center gap-2">
+                <RouteIcon className="w-4 h-4 text-blue-600" />
+                <h3 className="font-display font-semibold text-xs text-slate-900">
+                  Connect Saved Places
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsRouteDrawerOpen(false)}
+                aria-label="Close route planner"
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-md hover:bg-slate-200/60"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Travel Mode & Polyline Color Selector */}
+            <div className="p-3 border-b border-slate-100 space-y-3 bg-white shrink-0 text-xs">
+              <div>
+                <label className="text-[11px] font-medium text-slate-500 mb-1.5 block">
+                  Travel Mode (Google Directions)
+                </label>
+                <div className="grid grid-cols-4 gap-1 bg-slate-100 p-1 rounded-lg">
+                  {travelModesConfig.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setTravelMode(m.id)}
+                      className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors flex items-center justify-center gap-1 ${
+                        travelMode === m.id
+                          ? 'bg-white text-blue-700 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {m.icon}
+                      <span>{m.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-medium text-slate-500 mb-1.5 block">
+                  Polyline Color
+                </label>
+                <div className="flex items-center gap-2">
+                  {ROUTE_COLOR_PRESETS.map((col) => {
+                    const isSelected = routeColorHex === col.hex;
+                    return (
+                      <button
+                        key={col.id}
+                        type="button"
+                        onClick={() => setRouteColorHex(col.hex)}
+                        title={col.label}
+                        aria-label={col.label}
+                        className={`w-6 h-6 rounded-full flex items-center justify-center transition-transform ${
+                          isSelected ? 'scale-110 ring-2 ring-offset-2 ring-slate-900' : 'hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: col.hex }}
+                      >
+                        {isSelected && <Check className="w-3.5 h-3.5 text-white stroke-[3]" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Saved Places Stop Selection & Reordering List */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-slate-500 pb-1">
+                <span>Select 2+ Saved Places ({selectedRouteIds.length} chosen)</span>
+                {savedPlaces.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSelectAllSavedPlaces}
+                      className="text-blue-600 hover:underline"
+                    >
+                      All
+                    </button>
+                    <span>·</span>
+                    <button
+                      type="button"
+                      onClick={handleClearRouteSelection}
+                      className="text-slate-600 hover:underline"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {savedPlaces.length === 0 ? (
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg text-center space-y-1.5">
+                  <p className="text-xs text-slate-600">
+                    No Saved Places found in your itinerary.
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Bookmark places from the map or chat using the bookmark icon to connect them on a route.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {savedPlaces.map((place) => {
+                    const isChecked = selectedRouteIds.includes(place.id);
+                    const stopIndex = selectedRouteIds.indexOf(place.id);
+
+                    return (
+                      <div
+                        key={place.id}
+                        className={`p-2 rounded-lg border text-xs flex items-center justify-between gap-2 transition-colors ${
+                          isChecked
+                            ? 'bg-blue-50/50 border-blue-200 text-slate-900'
+                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        <label className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => handleToggleRoutePlace(place.id)}
+                            className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300"
+                          />
+                          <div className="truncate">
+                            <div className="flex items-center gap-1.5">
+                              {isChecked && (
+                                <span
+                                  className="w-4 h-4 rounded-full text-white text-[10px] font-mono flex items-center justify-center shrink-0 font-bold"
+                                  style={{ backgroundColor: routeColorHex }}
+                                >
+                                  {stopIndex + 1}
+                                </span>
+                              )}
+                              <span className="font-medium text-slate-900 truncate">
+                                {place.displayName}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-slate-500 block truncate">
+                              {place.formattedAddress}
+                            </span>
+                          </div>
+                        </label>
+
+                        {/* Order adjustment buttons */}
+                        {isChecked && selectedRouteIds.length > 1 && (
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleMoveStop(stopIndex, 'up')}
+                              disabled={stopIndex === 0}
+                              aria-label={`Move ${place.displayName} up`}
+                              className="p-1 text-slate-400 hover:text-slate-800 disabled:opacity-20 rounded hover:bg-slate-100"
+                            >
+                              <ArrowUp className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveStop(stopIndex, 'down')}
+                              disabled={stopIndex === selectedRouteIds.length - 1}
+                              aria-label={`Move ${place.displayName} down`}
+                              className="p-1 text-slate-400 hover:text-slate-800 disabled:opacity-20 rounded hover:bg-slate-100"
+                            >
+                              <ArrowDown className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Drawer Footer Actions */}
+            <div className="p-3 bg-slate-50 border-t border-slate-200 shrink-0 space-y-2">
+              {routeError && (
+                <div className="text-[11px] text-red-600 flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{routeError}</span>
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  void calculateAndDrawRoute(
+                    selectedRouteIds,
+                    savedPlaces,
+                    travelMode,
+                    routeColorHex
+                  );
+                }}
+                disabled={isComputingRoute || selectedRouteIds.length < 2}
+                className="w-full py-2 px-3 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-lg shadow-sm transition-colors flex items-center justify-center gap-1.5"
+              >
+                <RouteIcon className="w-3.5 h-3.5" />
+                <span>
+                  {isComputingRoute
+                    ? 'Calculating Directions...'
+                    : selectedRouteIds.length < 2
+                    ? 'Select at least 2 places'
+                    : `Draw Route (${selectedRouteIds.length} Stops)`}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Bottom Live Places Strip / Inspector */}
@@ -634,6 +1263,7 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
             livePlaces.map((place, idx) => {
               const isSelected = selectedPlace?.id === place.id;
               const isSaved = savedPlaces.some((s) => s.id === place.id);
+              const stopIndex = routePlaceIndexMap[place.id];
 
               return (
                 <div
@@ -657,6 +1287,14 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
                       <span className="font-display font-semibold text-xs text-slate-900 truncate">
                         {place.displayName}
                       </span>
+                      {stopIndex !== undefined && (
+                        <span
+                          className="px-1.5 py-0.2 text-[10px] font-mono font-bold text-white rounded shrink-0"
+                          style={{ backgroundColor: routeColorHex }}
+                        >
+                          Stop #{stopIndex + 1}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-0.5 truncate">
                       {place.rating !== undefined && (

@@ -293,3 +293,77 @@ Guidelines:
 3. Include practical details such as neighborhood context, why a place stands out, and what to check before visiting.
 4. Keep responses well-structured with concise sections or bullet points (around 120-220 words unless asked for a detailed itinerary).`;
 }
+
+export type TravelMode = 'WALKING' | 'DRIVING' | 'BICYCLING' | 'TRANSIT';
+
+export interface RouteColorOption {
+  id: string;
+  label: string;
+  hex: string;
+}
+
+export const ROUTE_COLOR_PRESETS: RouteColorOption[] = [
+  { id: 'blue', label: 'Sapphire Blue', hex: '#2563eb' },
+  { id: 'emerald', label: 'Emerald Green', hex: '#059669' },
+  { id: 'purple', label: 'Royal Violet', hex: '#7c3aed' },
+  { id: 'amber', label: 'Warm Amber', hex: '#d97706' },
+  { id: 'rose', label: 'Vibrant Rose', hex: '#e11d48' },
+];
+
+/**
+ * Calculates total cumulative distance and estimated travel durations between an ordered sequence of coordinates.
+ */
+export function calculateMultiStopMetrics(
+  coordinates: LatLngLiteral[],
+  travelMode: TravelMode = 'WALKING'
+): {
+  totalDistanceKm: number;
+  totalDurationMinutes: number;
+  formattedDistance: string;
+  formattedDuration: string;
+} {
+  if (coordinates.length < 2) {
+    return {
+      totalDistanceKm: 0,
+      totalDurationMinutes: 0,
+      formattedDistance: '0 km',
+      formattedDuration: '0 mins',
+    };
+  }
+
+  let totalKm = 0;
+  for (let i = 0; i < coordinates.length - 1; i++) {
+    totalKm += calculateHaversineDistanceKm(coordinates[i], coordinates[i + 1]);
+  }
+
+  totalKm = Number(totalKm.toFixed(2));
+
+  // Average speeds: WALKING: 4.8 km/h, DRIVING: 32 km/h, BICYCLING: 15 km/h, TRANSIT: 24 km/h
+  const speedKmh: Record<TravelMode, number> = {
+    WALKING: 4.8,
+    DRIVING: 32,
+    BICYCLING: 15,
+    TRANSIT: 24,
+  };
+
+  const speed = speedKmh[travelMode] || 4.8;
+  const totalMinutes = Math.max(1, Math.round((totalKm / speed) * 60));
+
+  const formattedDistance =
+    totalKm < 1 ? `${Math.round(totalKm * 1000)} m` : `${totalKm} km`;
+
+  let formattedDuration = `${totalMinutes} min`;
+  if (totalMinutes >= 60) {
+    const hrs = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    formattedDuration = mins > 0 ? `${hrs} hr ${mins} min` : `${hrs} hr`;
+  }
+
+  return {
+    totalDistanceKm: totalKm,
+    totalDurationMinutes: totalMinutes,
+    formattedDistance,
+    formattedDuration,
+  };
+}
+
