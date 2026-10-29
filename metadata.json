@@ -1,0 +1,10 @@
+{
+  "name": "AtlasPulse — Grounded Maps & Search Concierge",
+  "description": "Interactive map-based Gemini chatbot using real-time Google Maps and Google Search grounding to answer location-specific questions and plot live places.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
