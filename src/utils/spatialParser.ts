@@ -633,4 +633,146 @@ export function resolveEffectiveDevicePlatform(
   return detectAndroidOrMobile(userAgent, viewportWidth) ? 'android' : 'pc';
 }
 
+/**
+ * Returns a deduplicated ordered list of Gemini models to try so that if one model's
+ * rate-limit bucket is exhausted (429), the server automatically tries lighter/alternate models.
+ */
+export function getModelFallbackChain(
+  primaryModel: GeminiModelId
+): GeminiModelId[] {
+  const candidates: GeminiModelId[] = [
+    primaryModel,
+    'gemini-3.1-flash-lite',
+    'gemini-flash-latest',
+    'gemini-3.8-flash',
+  ];
+  return Array.from(new Set(candidates));
+}
 
+/**
+ * Checks whether an error message or payload indicates a 429 rate-limit or quota exhaustion error.
+ */
+export function isQuotaOrRateLimitError(rawMessage: string): boolean {
+  const normalized = (rawMessage || '').toLowerCase();
+  return (
+    normalized.includes('429') ||
+    normalized.includes('resource_exhausted') ||
+    normalized.includes('exceeded your current quota') ||
+    normalized.includes('rate limit') ||
+    normalized.includes('too many requests')
+  );
+}
+
+/**
+ * Builds a grounded spatial fallback response when the Gemini API key reaches its 429 quota limit,
+ * ensuring the interactive Google Map still plots live places via Places API and provides direct
+ * Google Maps & Search links without failing the user's request.
+ */
+export function buildQuotaFallbackReply(params: {
+  userQuery: string;
+  roleId: ChatbotRoleId;
+  activeCityName: string;
+  center: LatLngLiteral;
+}): {
+  reply: string;
+  sources: GroundedSource[];
+  suggestedPlaceQuery: string;
+  modelNote: string;
+} {
+  const { userQuery, roleId, activeCityName, center } = params;
+  const botRole = getBotRoleById(roleId);
+  const suggestedPlaceQuery = derivePlaceSearchQuery(
+    userQuery,
+    [],
+    activeCityName
+  );
+  const coordText = formatCoordinate(center.lat, center.lng);
+  const encodedQuery = encodeURIComponent(suggestedPlaceQuery);
+  const encodedCity = encodeURIComponent(activeCityName);
+
+  const sources: GroundedSource[] = [
+    {
+      id: `maps-fallback-${Date.now()}-1`,
+      kind: 'maps',
+      title: `${suggestedPlaceQuery} — Google Maps Live Directory`,
+      uri: `https://www.google.com/maps/search/?api=1&query=${encodedQuery}`,
+      reviewSnippets: [
+        `Live Google Maps search plotted around ${activeCityName} (${coordText}).`,
+      ],
+    },
+    {
+      id: `web-fallback-${Date.now()}-2`,
+      kind: 'web',
+      title: `${activeCityName} Local Guide & Current Hours — Google Search`,
+      uri: `https://www.google.com/search?q=${encodedQuery}+${encodedCity}`,
+    },
+  ];
+
+  const reply = `### ${botRole.label} — Live Map & Spatial Dispatch (${activeCityName})
+
+I have plotted **${suggestedPlaceQuery}** on the interactive Google Map around **${activeCityName}** (\`${coordText}\`) using the live **Google Maps Places API**.
+
+- **Live Map Pins Updated**: Inspect the numbered pins on the map or the **Live Google Maps Places** drawer to compare real-time ratings, review counts, distances, and exact addresses.
+- **${botRole.specialtyBadge} Tip**: Select **Reviews** on any place card to fetch top-rated visitor reviews via the Google Places Details API, or bookmark stops to build a multi-stop walking or transit polyline in the **Route Planner**.
+- **Note on AI Synthesis**: Your Gemini API key reached its current rate/quota limit (\`429 RESOURCE_EXHAUSTED\`), so live Google Maps place discovery has been activated directly. You can increase your Gemini API quota anytime in **Settings > Secrets**.`;
+
+  return {
+    reply,
+    sources,
+    suggestedPlaceQuery,
+    modelNote:
+      'Live Google Maps fallback active (Gemini API quota reached — check Settings > Secrets)',
+  };
+}
+
+export type ChatLayoutMode = 'split' | 'wide' | 'fullscreen';
+
+export interface ChatLayoutConfig {
+  mode: ChatLayoutMode;
+  label: string;
+  shortLabel: string;
+  description: string;
+  chatColSpanClass: string;
+  mapColSpanClass: string;
+  showMapInWorkspace: boolean;
+}
+
+/**
+ * Resolves the responsive grid column span and layout metadata for the AI Chat Box
+ * so users can switch between 50/50 Split, Wide Chat (70/30), or Full-Screen AI Studio.
+ */
+export function resolveChatLayoutConfig(mode: ChatLayoutMode): ChatLayoutConfig {
+  switch (mode) {
+    case 'wide':
+      return {
+        mode: 'wide',
+        label: 'Wide Chat (67% / 33%)',
+        shortLabel: 'Wide',
+        description: 'Expands the AI Chat box to 2/3 of the screen while keeping the live map docked on the right.',
+        chatColSpanClass: 'lg:col-span-8 h-full min-h-0',
+        mapColSpanClass: 'lg:col-span-4 h-full min-h-0',
+        showMapInWorkspace: true,
+      };
+    case 'fullscreen':
+      return {
+        mode: 'fullscreen',
+        label: 'Full-Screen AI Studio',
+        shortLabel: 'Full Screen',
+        description: 'Dedicates 100% of the workspace to an expanded AI Chat Studio with a live places quick-dispatch sidebar.',
+        chatColSpanClass: 'lg:col-span-12 h-full min-h-0',
+        mapColSpanClass: 'hidden',
+        showMapInWorkspace: false,
+      };
+    case 'split':
+    default:
+      return {
+        mode: 'split',
+        label: 'Balanced Split (50% / 50%)',
+        shortLabel: 'Split',
+        description: 'Balanced 50/50 split between the AI Concierge chat and interactive Google Map.',
+        chatColSpanClass: 'lg:col-span-6 h-full min-h-0',
+        mapColSpanClass: 'lg:col-span-6 h-full min-h-0',
+        showMapInWorkspace: true,
+      };
+  }
+}

@@ -14,6 +14,10 @@ import {
   getBotRoleById,
   detectAndroidOrMobile,
   resolveEffectiveDevicePlatform,
+  getModelFallbackChain,
+  isQuotaOrRateLimitError,
+  buildQuotaFallbackReply,
+  resolveChatLayoutConfig,
 } from './spatialParser';
 
 test('resolveMapStyleConfig resolves standard, roadmap, satellite, hybrid, and high-contrast styles', () => {
@@ -188,4 +192,59 @@ test('detectAndroidOrMobile and resolveEffectiveDevicePlatform support PC and An
   assert.equal(resolveEffectiveDevicePlatform('pc', androidChromeUA, 412), 'pc');
 });
 
+test('getModelFallbackChain, isQuotaOrRateLimitError, and buildQuotaFallbackReply handle 429 RESOURCE_EXHAUSTED gracefully', () => {
+  const chainFromDefault = getModelFallbackChain('gemini-3.8-flash');
+  assert.deepEqual(chainFromDefault, [
+    'gemini-3.8-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-flash-latest',
+  ]);
 
+  const chainFromPro = getModelFallbackChain('gemini-4-argon');
+  assert.deepEqual(chainFromPro, [
+    'gemini-4-argon',
+    'gemini-3.1-flash-lite',
+    'gemini-flash-latest',
+    'gemini-3.8-flash',
+  ]);
+
+  assert.equal(
+    isQuotaOrRateLimitError(
+      '{"error":{"code":429,"message":"You exceeded your current quota","status":"RESOURCE_EXHAUSTED"}}'
+    ),
+    true
+  );
+  assert.equal(isQuotaOrRateLimitError('Network timeout error'), false);
+
+  const fallback = buildQuotaFallbackReply({
+    userQuery: 'Find top specialty coffee roasters in San Francisco, CA',
+    roleId: 'concierge',
+    activeCityName: 'San Francisco, CA',
+    center: { lat: 37.7749, lng: -122.4194 },
+  });
+
+  assert.ok(fallback.reply.includes('Local Concierge'));
+  assert.ok(fallback.reply.includes('San Francisco, CA'));
+  assert.ok(fallback.suggestedPlaceQuery.length > 0);
+  assert.ok(fallback.sources.length >= 2);
+  assert.ok(fallback.modelNote.includes('Live Google Maps fallback active'));
+});
+
+test('resolveChatLayoutConfig resolves split, wide, and fullscreen AI chat layout modes', () => {
+  const split = resolveChatLayoutConfig('split');
+  assert.equal(split.mode, 'split');
+  assert.ok(split.chatColSpanClass.includes('lg:col-span-6'));
+  assert.ok(split.mapColSpanClass.includes('lg:col-span-6'));
+  assert.equal(split.showMapInWorkspace, true);
+
+  const wide = resolveChatLayoutConfig('wide');
+  assert.equal(wide.mode, 'wide');
+  assert.ok(wide.chatColSpanClass.includes('lg:col-span-8'));
+  assert.ok(wide.mapColSpanClass.includes('lg:col-span-4'));
+  assert.equal(wide.showMapInWorkspace, true);
+
+  const fullscreen = resolveChatLayoutConfig('fullscreen');
+  assert.equal(fullscreen.mode, 'fullscreen');
+  assert.ok(fullscreen.chatColSpanClass.includes('lg:col-span-12'));
+  assert.equal(fullscreen.showMapInWorkspace, false);
+});

@@ -80,10 +80,11 @@ export const CITY_VIEWPORT_PRESETS: CityViewportPreset[] = [
   },
 ];
 
-export type WorkspaceTab = 'workspace' | 'places' | 'grounding' | 'saved';
+export type WorkspaceTab = 'workspace' | 'chat' | 'places' | 'grounding' | 'saved';
 
 export interface ChatSettings {
   roleId: ChatbotRoleId;
   model: GeminiModelId;
   groundingMode: GroundingMode;
 }
+

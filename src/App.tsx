@@ -25,6 +25,7 @@ import {
 } from './lib/firebase';
 import {
   CHATBOT_ROLES,
+  ChatLayoutMode,
   ChatbotRoleId,
   DeviceViewMode,
   GeminiModelId,
@@ -33,6 +34,7 @@ import {
   LatLngLiteral,
   MobileWorkspacePane,
   formatCoordinate,
+  resolveChatLayoutConfig,
   resolveEffectiveDevicePlatform,
 } from './utils/spatialParser';
 import {
@@ -47,7 +49,14 @@ import { InteractiveMapPanel } from './components/InteractiveMapPanel';
 import { AtlasPulseLogo } from './components/AtlasPulseLogo';
 import { PlaceReviewsSummary } from './components/live-places';
 import { AuthModal } from './components/AuthModal';
-import { AuthFormMode, getUserInitials } from './utils/authValidator';
+import {
+  AuthFormMode,
+  FeatureAccessCheckResult,
+  GatedFeatureId,
+  GATED_FEATURES_CATALOG,
+  checkFeatureAccess,
+  getUserInitials,
+} from './utils/authValidator';
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
@@ -85,6 +94,8 @@ export default function App() {
     typeof window !== 'undefined' ? window.innerWidth : 1280
   );
   const [androidPane, setAndroidPane] = useState<MobileWorkspacePane>('chat');
+  const [chatLayoutMode, setChatLayoutMode] = useState<ChatLayoutMode>('split');
+  const [isChatDrawerOpen, setIsChatDrawerOpen] = useState(false);
 
   useEffect(() => {
     const handleResize = () => {
@@ -144,6 +155,8 @@ export default function App() {
   const [reviewModalPlace, setReviewModalPlace] = useState<LivePlaceItem | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<AuthFormMode>('signin');
+  const [gatedFeatureNotice, setGatedFeatureNotice] =
+    useState<FeatureAccessCheckResult | null>(null);
   const [routePlaceIds, setRoutePlaceIds] = useState<string[]>([]);
   const [savedPlaces, setSavedPlaces] = useState<LivePlaceItem[]>(() => {
     try {
@@ -216,25 +229,32 @@ export default function App() {
     }
   }, [savedPlaces, user]);
 
-  const handleToggleSavePlace = useCallback(
-    (place: LivePlaceItem) => {
-      const exists = savedPlaces.some((p) => p.id === place.id);
-      if (user) {
-        if (exists) {
-          void removePlaceFromFirestore(user.uid, place.id);
-        } else {
-          void savePlaceToFirestore(user.uid, place);
-        }
-      } else {
-        setSavedPlaces((prev) => {
-          if (exists) {
-            return prev.filter((p) => p.id !== place.id);
-          }
-          return [place, ...prev];
-        });
+  const handleRequireAuth = useCallback(
+    (featureId: GatedFeatureId, preferredMode: AuthFormMode = 'signin') => {
+      const check = checkFeatureAccess(featureId, Boolean(user));
+      if (!check.allowed) {
+        setGatedFeatureNotice(check);
+        setAuthModalMode(preferredMode);
+        setIsAuthModalOpen(true);
       }
     },
-    [savedPlaces, user]
+    [user]
+  );
+
+  const handleToggleSavePlace = useCallback(
+    (place: LivePlaceItem) => {
+      if (!user) {
+        handleRequireAuth('save_places');
+        return;
+      }
+      const exists = savedPlaces.some((p) => p.id === place.id);
+      if (exists) {
+        void removePlaceFromFirestore(user.uid, place.id);
+      } else {
+        void savePlaceToFirestore(user.uid, place);
+      }
+    },
+    [savedPlaces, user, handleRequireAuth]
   );
 
   const handleSendMessage = useCallback(
@@ -442,14 +462,35 @@ export default function App() {
                 onClick={(e) => {
                   e.preventDefault();
                   setActiveTab('workspace');
+                  if (chatLayoutMode === 'fullscreen') {
+                    setChatLayoutMode('split');
+                  }
                 }}
                 className={`transition-colors whitespace-nowrap shrink-0 py-0.5 ${
-                  activeTab === 'workspace'
+                  activeTab === 'workspace' && chatLayoutMode !== 'fullscreen'
                     ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-blue-600'
                     : 'hover:text-slate-900'
                 }`}
               >
-                Workspace
+                Map &amp; Chat
+              </a>
+              <a
+                href="#chat-studio"
+                data-testid="pc-nav-chat-studio"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setActiveTab('chat');
+                  setChatLayoutMode('fullscreen');
+                }}
+                className={`transition-colors whitespace-nowrap shrink-0 py-0.5 inline-flex items-center gap-1.5 ${
+                  activeTab === 'chat' ||
+                  (activeTab === 'workspace' && chatLayoutMode === 'fullscreen')
+                    ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-blue-600 font-semibold'
+                    : 'hover:text-slate-900'
+                }`}
+              >
+                <MessageSquare className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                <span>AI Chat Studio</span>
               </a>
               <a
                 href="#places"
@@ -481,17 +522,19 @@ export default function App() {
               </a>
               <a
                 href="#saved"
+                data-testid="pc-nav-saved"
                 onClick={(e) => {
                   e.preventDefault();
                   setActiveTab('saved');
                 }}
-                className={`transition-colors whitespace-nowrap shrink-0 py-0.5 ${
+                className={`transition-colors whitespace-nowrap shrink-0 py-0.5 inline-flex items-center gap-1.5 ${
                   activeTab === 'saved'
                     ? 'text-slate-950 underline underline-offset-8 decoration-2 decoration-blue-600'
                     : 'hover:text-slate-900'
                 }`}
               >
-                Saved ({savedPlaces.length})
+                <span>Saved ({user ? savedPlaces.length : 'Locked'})</span>
+                {!user && <Lock className="w-3 h-3 text-amber-600 shrink-0" />}
               </a>
             </nav>
           )}
@@ -602,6 +645,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
+                  setGatedFeatureNotice(null);
                   setAuthModalMode('signin');
                   setIsAuthModalOpen(true);
                 }}
@@ -705,116 +749,167 @@ export default function App() {
             language="en"
             region="US"
           >
-            {/* Split Chat + Interactive Google Map Workspace (PC Desktop 12-Col Split vs Android Single-Pane) */}
-            <div
-              className={`h-full ${
-                activeTab === 'workspace'
-                  ? isAndroidView
-                    ? 'flex flex-col'
-                    : 'grid grid-cols-1 lg:grid-cols-12'
-                  : 'hidden'
-              }`}
-            >
-              <div
-                className={
-                  isAndroidView
-                    ? androidPane === 'chat'
-                      ? 'flex-1 min-h-0 h-full'
-                      : 'hidden'
-                    : 'lg:col-span-5 h-full min-h-0'
-                }
-              >
-                <ChatThreadPanel
-                  messages={messages}
-                  isLoading={isChatLoading}
-                  error={chatError}
-                  roleId={roleId}
-                  onRoleChange={setRoleId}
-                  model={model}
-                  onModelChange={setModel}
-                  groundingMode={groundingMode}
-                  onGroundingModeChange={setGroundingMode}
-                  activeCityName={activePreset.name}
-                  center={mapCenter}
-                  onSendMessage={handleSendMessage}
-                  onPlotQueryOnMap={(q) => {
-                    setExternalSearchQuery(q);
-                    if (isAndroidView) {
-                      setAndroidPane('map');
-                    }
-                  }}
-                  onClearHistory={handleNewSession}
-                />
-              </div>
+            {/* Split Chat + Interactive Google Map Workspace (PC Desktop 12-Col Split / Wide / Full-Screen Studio vs Android Single-Pane) */}
+            {(() => {
+              const effectiveChatMode: ChatLayoutMode =
+                activeTab === 'chat' ? 'fullscreen' : chatLayoutMode;
+              const layoutCfg = resolveChatLayoutConfig(effectiveChatMode);
+              const isWorkspaceOrChatVisible =
+                activeTab === 'workspace' || activeTab === 'chat';
 
-              <div
-                className={
-                  isAndroidView
-                    ? androidPane === 'map'
-                      ? 'flex-1 min-h-0 h-full'
+              return (
+                <div
+                  className={`h-full ${
+                    isWorkspaceOrChatVisible
+                      ? isAndroidView
+                        ? 'flex flex-col'
+                        : 'grid grid-cols-1 lg:grid-cols-12'
                       : 'hidden'
-                    : 'lg:col-span-7 h-full min-h-0'
-                }
-              >
-                <InteractiveMapPanel
-                  activePreset={activePreset}
-                  onSelectPreset={(preset) => {
-                    setActivePreset(preset);
-                    setMapCenter(preset.center);
-                    setMapZoom(preset.zoom);
-                  }}
-                  mapCenter={mapCenter}
-                  mapZoom={mapZoom}
-                  onCameraChange={(c, z) => {
-                    setMapCenter(c);
-                    setMapZoom(z);
-                  }}
-                  externalSearchQuery={externalSearchQuery}
-                  livePlaces={livePlaces}
-                  onUpdateLivePlaces={setLivePlaces}
-                  selectedPlace={selectedPlace}
-                  onSelectPlace={setSelectedPlace}
-                  savedPlaces={savedPlaces}
-                  onToggleSavePlace={handleToggleSavePlace}
-                  onAskAboutPlace={(place) => {
-                    setActiveTab('workspace');
-                    if (isAndroidView) {
-                      setAndroidPane('chat');
-                    }
-                    void handleSendMessage(
-                      `Tell me more about ${place.displayName} at ${place.formattedAddress}, including what it is known for and any visitor tips.`
-                    );
-                  }}
-                  onViewReviews={setReviewModalPlace}
-                  routePlaceIds={routePlaceIds}
-                  onRoutePlaceIdsChange={setRoutePlaceIds}
-                />
-              </div>
-
-              {/* Android Floating Quick-Toggle FAB inside Workspace */}
-              {isAndroidView && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setAndroidPane((prev) => (prev === 'chat' ? 'map' : 'chat'))
-                  }
-                  data-testid="android-toggle-pane-fab"
-                  className="absolute bottom-4 right-4 z-30 min-h-[44px] px-4 py-2.5 rounded-full bg-blue-600 text-white text-xs font-semibold shadow-lg hover:bg-blue-700 flex items-center gap-2 border border-blue-400/40"
+                  }`}
                 >
-                  {androidPane === 'chat' ? (
-                    <>
-                      <MapIcon className="w-4 h-4" />
-                      <span>Open Map ({livePlaces.length})</span>
-                    </>
-                  ) : (
-                    <>
-                      <MessageSquare className="w-4 h-4" />
-                      <span>Back to AI Chat</span>
-                    </>
+                  <div
+                    data-testid="workspace-chat-column"
+                    data-layout-mode={effectiveChatMode}
+                    className={
+                      isAndroidView
+                        ? activeTab === 'chat' || androidPane === 'chat'
+                          ? 'flex-1 min-h-0 h-full'
+                          : 'hidden'
+                        : layoutCfg.chatColSpanClass
+                    }
+                  >
+                    <ChatThreadPanel
+                      messages={messages}
+                      isLoading={isChatLoading}
+                      error={chatError}
+                      roleId={roleId}
+                      onRoleChange={setRoleId}
+                      model={model}
+                      onModelChange={setModel}
+                      groundingMode={groundingMode}
+                      onGroundingModeChange={setGroundingMode}
+                      activeCityName={activePreset.name}
+                      center={mapCenter}
+                      onSendMessage={handleSendMessage}
+                      onPlotQueryOnMap={(q) => {
+                        setExternalSearchQuery(q);
+                        setActiveTab('workspace');
+                        if (chatLayoutMode === 'fullscreen') {
+                          setChatLayoutMode('split');
+                        }
+                        if (isAndroidView) {
+                          setAndroidPane('map');
+                        }
+                      }}
+                      onClearHistory={handleNewSession}
+                      isAuthenticated={Boolean(user)}
+                      onRequireAuth={handleRequireAuth}
+                      chatLayoutMode={effectiveChatMode}
+                      onChatLayoutModeChange={(nextMode) => {
+                        setChatLayoutMode(nextMode);
+                        if (nextMode === 'fullscreen') {
+                          setActiveTab('chat');
+                        } else {
+                          setActiveTab('workspace');
+                        }
+                      }}
+                      onOpenFullScreenStudio={() => {
+                        setChatLayoutMode('fullscreen');
+                        setActiveTab('chat');
+                      }}
+                      onReturnToSplitMap={() => {
+                        setChatLayoutMode('split');
+                        setActiveTab('workspace');
+                      }}
+                      isAndroidView={isAndroidView}
+                      livePlaces={livePlaces}
+                      onSelectPlaceOnMap={(place) => {
+                        setSelectedPlace(place);
+                        setChatLayoutMode('split');
+                        setActiveTab('workspace');
+                        if (isAndroidView) {
+                          setAndroidPane('map');
+                        }
+                      }}
+                      onViewPlaceReviews={setReviewModalPlace}
+                    />
+                  </div>
+
+                  <div
+                    data-testid="workspace-map-column"
+                    className={
+                      isAndroidView
+                        ? activeTab === 'workspace' && androidPane === 'map'
+                          ? 'flex-1 min-h-0 h-full'
+                          : 'hidden'
+                        : layoutCfg.mapColSpanClass
+                    }
+                  >
+                    <InteractiveMapPanel
+                      activePreset={activePreset}
+                      onSelectPreset={(preset) => {
+                        setActivePreset(preset);
+                        setMapCenter(preset.center);
+                        setMapZoom(preset.zoom);
+                      }}
+                      mapCenter={mapCenter}
+                      mapZoom={mapZoom}
+                      onCameraChange={(c, z) => {
+                        setMapCenter(c);
+                        setMapZoom(z);
+                      }}
+                      externalSearchQuery={externalSearchQuery}
+                      livePlaces={livePlaces}
+                      onUpdateLivePlaces={setLivePlaces}
+                      selectedPlace={selectedPlace}
+                      onSelectPlace={setSelectedPlace}
+                      savedPlaces={user ? savedPlaces : []}
+                      onToggleSavePlace={handleToggleSavePlace}
+                      onAskAboutPlace={(place) => {
+                        setActiveTab('workspace');
+                        if (isAndroidView) {
+                          setAndroidPane('chat');
+                        }
+                        void handleSendMessage(
+                          `Tell me more about ${place.displayName} at ${place.formattedAddress}, including what it is known for and any visitor tips.`
+                        );
+                      }}
+                      onViewReviews={setReviewModalPlace}
+                      routePlaceIds={routePlaceIds}
+                      onRoutePlaceIdsChange={setRoutePlaceIds}
+                      isAuthenticated={Boolean(user)}
+                      onRequireAuth={handleRequireAuth}
+                    />
+                  </div>
+
+                  {/* Android Floating Quick-Toggle FAB inside Workspace */}
+                  {isAndroidView && activeTab === 'workspace' && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAndroidPane((prev) =>
+                          prev === 'chat' ? 'map' : 'chat'
+                        )
+                      }
+                      data-testid="android-toggle-pane-fab"
+                      className="absolute bottom-4 right-4 z-30 min-h-[44px] px-4 py-2.5 rounded-full bg-blue-600 text-white text-xs font-semibold shadow-lg hover:bg-blue-700 flex items-center gap-2 border border-blue-400/40"
+                    >
+                      {androidPane === 'chat' ? (
+                        <>
+                          <MapIcon className="w-4 h-4" />
+                          <span>Open Map ({livePlaces.length})</span>
+                        </>
+                      ) : (
+                        <>
+                          <MessageSquare className="w-4 h-4" />
+                          <span>Back to AI Chat</span>
+                        </>
+                      )}
+                    </button>
                   )}
-                </button>
-              )}
-            </div>
+                </div>
+              );
+            })()}
 
             {/* Secondary View: Live Places Data Table (PC) or Touch Cards (Android Browser) */}
             {activeTab === 'places' && (
@@ -1105,178 +1200,224 @@ export default function App() {
               </div>
             )}
 
-            {/* Secondary View: Saved Places */}
+            {/* Secondary View: Saved Places (Member-Only Feature Gate when Logged Out) */}
             {activeTab === 'saved' && (
               <div className="h-full overflow-y-auto p-4 md:p-6 max-w-5xl mx-auto space-y-6">
-                <div className="flex flex-wrap items-baseline justify-between gap-4 border-b border-slate-200 pb-4">
-                  <div>
-                    <div className="flex items-center gap-2.5 flex-wrap">
-                      <h1 className="font-display text-lg md:text-xl font-bold text-slate-950">
-                        Saved Places Itinerary
-                      </h1>
-                      {user ? (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
-                          <Cloud className="w-3 h-3 text-emerald-600" />
-                          <span>Firebase Cloud Synced</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full">
-                          <span>Local Browser Storage</span>
-                        </span>
-                      )}
+                {!user ? (
+                  <div
+                    data-testid="saved-tab-auth-gate"
+                    className="bg-white border border-slate-200 rounded-2xl p-6 md:p-8 shadow-xs space-y-6 max-w-3xl mx-auto mt-2"
+                  >
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+                      <div className="flex items-start gap-3.5">
+                        <div className="w-11 h-11 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                          <Lock className="w-5 h-5 text-amber-600" />
+                        </div>
+                        <div>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-900">
+                            Member-Only Access
+                          </span>
+                          <h1 className="font-display text-lg md:text-xl font-bold text-slate-950 mt-1">
+                            Sign In to Access Saved Itineraries &amp; Pro Tools
+                          </h1>
+                          <p className="text-xs md:text-sm text-slate-600 mt-1">
+                            Certain AtlasPulse capabilities are restricted to authenticated accounts so your bookmarks, custom routes, and specialist AI configurations remain private and synced in Firebase Cloud Firestore.
+                          </p>
+                        </div>
+                      </div>
                     </div>
-                    <p className="text-xs md:text-sm text-slate-600 mt-1">
-                      {user
-                        ? `Bookmarked Google Maps locations synced in real time to your Firebase account (${user.email}).`
-                        : 'Bookmarked Google Maps locations saved locally. Sign in with Google to sync across devices.'}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {savedPlaces.length >= 2 && (
+
+                    {/* Grid of Gated Member Features */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                      {(
+                        Object.entries(GATED_FEATURES_CATALOG) as Array<
+                          [
+                            GatedFeatureId,
+                            { title: string; reason: string; benefits: string[] }
+                          ]
+                        >
+                      ).map(([fId, meta]) => (
+                        <div
+                          key={fId}
+                          data-testid={`gated-feature-card-${fId}`}
+                          className="p-4 rounded-xl bg-slate-50 border border-slate-200/90 space-y-2"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <h2 className="font-display font-semibold text-xs md:text-sm text-slate-900">
+                              {meta.title}
+                            </h2>
+                            <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          </div>
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            {meta.reason}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200">
                       <button
                         type="button"
                         onClick={() => {
-                          setRoutePlaceIds(savedPlaces.map((p) => p.id));
                           setActiveTab('workspace');
                           if (isAndroidView) setAndroidPane('map');
                         }}
-                        className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-xs"
+                        className="px-4 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
                       >
-                        <Route className="w-3.5 h-3.5" />
-                        <span>Draw Route on Map</span>
+                        Continue as Guest on Map
                       </button>
-                    )}
-                    {savedPlaces.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const names = savedPlaces
-                            .map((p) => p.displayName)
-                            .join(', ');
-                          setActiveTab('workspace');
-                          if (isAndroidView) setAndroidPane('chat');
-                          void handleSendMessage(
-                            `Create a logical walking or transit order to visit my saved places: ${names}.`
-                          );
-                        }}
-                        className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                      >
-                        <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Ask Chatbot to Plan Route</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
 
-                {!user && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                    <div className="space-y-0.5">
-                      <div className="text-xs font-semibold text-blue-950 flex items-center gap-1.5">
-                        <Cloud className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Back up and sync your saved places</span>
+                      <div className="flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          data-testid="gate-signin-btn"
+                          onClick={() =>
+                            handleRequireAuth('saved_itinerary_tab', 'signin')
+                          }
+                          className="px-4 py-2 text-xs font-semibold text-slate-900 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors shadow-2xs"
+                        >
+                          Sign In to Unlock
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="gate-signup-btn"
+                          onClick={() =>
+                            handleRequireAuth('saved_itinerary_tab', 'signup')
+                          }
+                          className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-xs"
+                        >
+                          Create Free Account
+                        </button>
                       </div>
-                      <p className="text-xs text-blue-800">
-                        Sign in with Google or create an email account to automatically store bookmarks in Firebase Firestore and access your trip across devices.
-                      </p>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAuthModalMode('signin');
-                          setIsAuthModalOpen(true);
-                        }}
-                        disabled={isAuthLoading}
-                        className="px-3 py-1.5 text-xs font-medium text-slate-900 bg-white border border-blue-200 rounded-lg hover:bg-blue-100/50 transition-colors whitespace-nowrap shrink-0 shadow-xs"
-                      >
-                        Sign In
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAuthModalMode('signup');
-                          setIsAuthModalOpen(true);
-                        }}
-                        disabled={isAuthLoading}
-                        className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap shrink-0 shadow-xs"
-                      >
-                        Create Account
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {savedPlaces.length === 0 ? (
-                  <div className="bg-white border border-slate-200 rounded-xl p-8 text-center space-y-3">
-                    <p className="text-sm text-slate-600">
-                      You have not bookmarked any places yet. Click the bookmark icon next to any live place in the map drawer to save it here.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab('workspace');
-                        if (isAndroidView) setAndroidPane('map');
-                      }}
-                      className="px-4 py-2 text-xs font-medium text-white bg-slate-900 rounded-lg"
-                    >
-                      Explore Map
-                    </button>
                   </div>
                 ) : (
-                  <div className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-200">
-                    {savedPlaces.map((place) => (
-                      <div
-                        key={place.id}
-                        className="p-4 flex items-center justify-between gap-4 flex-wrap"
-                      >
-                        <div>
-                          <h3 className="font-display font-semibold text-sm text-slate-900">
-                            {place.displayName}
-                          </h3>
-                          <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-0.5">
-                            <span>{place.formattedAddress}</span>
-                            {place.rating !== undefined && (
-                              <>
-                                <span aria-hidden="true">·</span>
-                                <span className="font-mono tabular-nums text-slate-700">
-                                  ★ {place.rating.toFixed(1)}
-                                </span>
-                              </>
-                            )}
-                          </div>
+                  <>
+                    <div className="flex flex-wrap items-baseline justify-between gap-4 border-b border-slate-200 pb-4">
+                      <div>
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <h1 className="font-display text-lg md:text-xl font-bold text-slate-950">
+                            Saved Places Itinerary
+                          </h1>
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                            <Cloud className="w-3 h-3 text-emerald-600" />
+                            <span>Firebase Cloud Synced</span>
+                          </span>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => setReviewModalPlace(place)}
-                            className="px-2.5 py-1.5 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-md hover:bg-amber-100 flex items-center gap-1 transition-colors"
-                            title="View top-rated user reviews summary via Google Places Details API"
-                          >
-                            <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
-                            <span>Reviews</span>
-                          </button>
-                          {place.googleMapsURI && (
-                            <a
-                              href={place.googleMapsURI}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="px-2.5 py-1.5 text-xs font-medium text-slate-700 border border-slate-200 rounded-md hover:bg-slate-100"
-                            >
-                              Google Maps
-                            </a>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => handleToggleSavePlace(place)}
-                            aria-label={`Remove ${place.displayName}`}
-                            className="p-1.5 text-slate-500 hover:text-red-600 border border-slate-200 rounded-md"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
+                        <p className="text-xs md:text-sm text-slate-600 mt-1">
+                          Bookmarked Google Maps locations synced in real time to your Firebase account ({user.email}).
+                        </p>
                       </div>
-                    ))}
-                  </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {savedPlaces.length >= 2 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRoutePlaceIds(savedPlaces.map((p) => p.id));
+                              setActiveTab('workspace');
+                              if (isAndroidView) setAndroidPane('map');
+                            }}
+                            className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-xs"
+                          >
+                            <Route className="w-3.5 h-3.5" />
+                            <span>Draw Route on Map</span>
+                          </button>
+                        )}
+                        {savedPlaces.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const names = savedPlaces
+                                .map((p) => p.displayName)
+                                .join(', ');
+                              setActiveTab('workspace');
+                              if (isAndroidView) setAndroidPane('chat');
+                              void handleSendMessage(
+                                `Create a logical walking or transit order to visit my saved places: ${names}.`
+                              );
+                            }}
+                            className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
+                            <span>Ask Chatbot to Plan Route</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {savedPlaces.length === 0 ? (
+                      <div className="bg-white border border-slate-200 rounded-xl p-8 text-center space-y-3">
+                        <p className="text-sm text-slate-600">
+                          You have not bookmarked any places yet. Click the bookmark icon next to any live place in the map drawer to save it here.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveTab('workspace');
+                            if (isAndroidView) setAndroidPane('map');
+                          }}
+                          className="px-4 py-2 text-xs font-medium text-white bg-slate-900 rounded-lg"
+                        >
+                          Explore Map
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-200">
+                        {savedPlaces.map((place) => (
+                          <div
+                            key={place.id}
+                            className="p-4 flex items-center justify-between gap-4 flex-wrap"
+                          >
+                            <div>
+                              <h3 className="font-display font-semibold text-sm text-slate-900">
+                                {place.displayName}
+                              </h3>
+                              <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-0.5">
+                                <span>{place.formattedAddress}</span>
+                                {place.rating !== undefined && (
+                                  <>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="font-mono tabular-nums text-slate-700">
+                                      ★ {place.rating.toFixed(1)}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => setReviewModalPlace(place)}
+                                className="px-2.5 py-1.5 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-md hover:bg-amber-100 flex items-center gap-1 transition-colors"
+                                title="View top-rated user reviews summary via Google Places Details API"
+                              >
+                                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                                <span>Reviews</span>
+                              </button>
+                              {place.googleMapsURI && (
+                                <a
+                                  href={place.googleMapsURI}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 border border-slate-200 rounded-md hover:bg-slate-100"
+                                >
+                                  Google Maps
+                                </a>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleToggleSavePlace(place)}
+                                aria-label={`Remove ${place.displayName}`}
+                                className="p-1.5 text-slate-500 hover:text-red-600 border border-slate-200 rounded-md"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -1302,12 +1443,74 @@ export default function App() {
               </div>
             )}
 
+            {/* Floating AI Chat Drawer Launcher (when viewing Places, Grounded Links, or Saved tabs) */}
+            {(activeTab === 'places' ||
+              activeTab === 'grounding' ||
+              activeTab === 'saved') &&
+              !isChatDrawerOpen && (
+                <button
+                  type="button"
+                  onClick={() => setIsChatDrawerOpen(true)}
+                  data-testid="floating-ai-drawer-btn"
+                  className="fixed bottom-16 md:bottom-6 right-5 z-40 px-4 py-3 rounded-full bg-slate-900 text-white text-xs md:text-sm font-semibold shadow-xl hover:bg-blue-600 transition-all flex items-center gap-2 border border-slate-700"
+                >
+                  <MessageSquare className="w-4 h-4 text-blue-400" />
+                  <span>Open AI Chat Drawer ({messages.length})</span>
+                </button>
+              )}
+
+            {/* Slide-Over AI Chat Drawer Modal (Accessible from any tab) */}
+            {isChatDrawerOpen && (
+              <div
+                data-testid="floating-ai-drawer-overlay"
+                className="fixed inset-0 z-50 flex justify-end bg-slate-950/50 backdrop-blur-xs animate-in fade-in duration-150"
+              >
+                <div className="w-full max-w-2xl h-full bg-white shadow-2xl flex flex-col">
+                  <ChatThreadPanel
+                    messages={messages}
+                    isLoading={isChatLoading}
+                    error={chatError}
+                    roleId={roleId}
+                    onRoleChange={setRoleId}
+                    model={model}
+                    onModelChange={setModel}
+                    groundingMode={groundingMode}
+                    onGroundingModeChange={setGroundingMode}
+                    activeCityName={activePreset.name}
+                    center={mapCenter}
+                    onSendMessage={handleSendMessage}
+                    onPlotQueryOnMap={(q) => {
+                      setExternalSearchQuery(q);
+                      setIsChatDrawerOpen(false);
+                      setActiveTab('workspace');
+                      if (chatLayoutMode === 'fullscreen') {
+                        setChatLayoutMode('split');
+                      }
+                      if (isAndroidView) {
+                        setAndroidPane('map');
+                      }
+                    }}
+                    onClearHistory={handleNewSession}
+                    isAuthenticated={Boolean(user)}
+                    onRequireAuth={handleRequireAuth}
+                    isDrawerView={true}
+                    onCloseDrawer={() => setIsChatDrawerOpen(false)}
+                    livePlaces={livePlaces}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Authentication & Cloud Sync Modal */}
             <AuthModal
               isOpen={isAuthModalOpen}
-              onClose={() => setIsAuthModalOpen(false)}
+              onClose={() => {
+                setIsAuthModalOpen(false);
+                setGatedFeatureNotice(null);
+              }}
               savedPlacesCount={savedPlaces.length}
               initialMode={authModalMode}
+              gatedFeature={gatedFeatureNotice}
             />
           </APIProvider>
         </main>

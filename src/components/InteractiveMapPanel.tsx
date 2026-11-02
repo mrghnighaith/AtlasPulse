@@ -32,6 +32,7 @@ import {
   Trash2,
   AlertCircle,
   Contrast,
+  Lock,
 } from 'lucide-react';
 import {
   calculateHaversineDistanceKm,
@@ -45,6 +46,7 @@ import {
   ROUTE_COLOR_PRESETS,
   TravelMode,
 } from '../utils/spatialParser';
+import { GatedFeatureId } from '../utils/authValidator';
 import {
   CITY_VIEWPORT_PRESETS,
   CityViewportPreset,
@@ -68,6 +70,8 @@ interface InteractiveMapPanelProps {
   onViewReviews?: (place: LivePlaceItem) => void;
   routePlaceIds?: string[];
   onRoutePlaceIdsChange?: (ids: string[]) => void;
+  isAuthenticated?: boolean;
+  onRequireAuth?: (featureId: GatedFeatureId) => void;
 }
 
 const QUICK_PLACE_CATEGORIES = [
@@ -249,6 +253,8 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
   onViewReviews,
   routePlaceIds,
   onRoutePlaceIdsChange,
+  isAuthenticated = false,
+  onRequireAuth,
 }) => {
   const map = useMap();
   const placesLib = useMapsLibrary('places');
@@ -891,11 +897,24 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {/* Route Planner Drawer Trigger */}
+            {/* Route Planner Drawer Trigger (Requires Login) */}
             <button
               type="button"
-              onClick={() => setIsRouteDrawerOpen((prev) => !prev)}
+              data-testid="route-planner-trigger-btn"
+              data-locked={!isAuthenticated ? 'true' : 'false'}
+              onClick={() => {
+                if (!isAuthenticated) {
+                  onRequireAuth?.('route_planner');
+                  return;
+                }
+                setIsRouteDrawerOpen((prev) => !prev);
+              }}
               aria-expanded={isRouteDrawerOpen}
+              title={
+                !isAuthenticated
+                  ? 'Sign in to unlock Multi-Stop Route Planner & Google Directions'
+                  : 'Open Multi-Stop Route Planner'
+              }
               className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                 isRouteDrawerOpen || selectedRouteIds.length >= 2
                   ? 'bg-blue-600 text-white shadow-xs'
@@ -904,10 +923,17 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
             >
               <RouteIcon className="w-3.5 h-3.5" />
               <span>Route Planner</span>
-              {selectedRouteIds.length >= 2 && (
-                <span className="px-1.5 py-0.2 bg-white/20 text-white rounded text-[10px] font-mono">
-                  {selectedRouteIds.length}
-                </span>
+              {!isAuthenticated ? (
+                <Lock
+                  data-testid="route-planner-lock-icon"
+                  className="w-3 h-3 text-amber-600 shrink-0"
+                />
+              ) : (
+                selectedRouteIds.length >= 2 && (
+                  <span className="px-1.5 py-0.2 bg-white/20 text-white rounded text-[10px] font-mono">
+                    {selectedRouteIds.length}
+                  </span>
+                )
               )}
             </button>
 
@@ -1450,13 +1476,24 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
 
                     <button
                       type="button"
+                      data-testid={`save-place-btn-${idx}`}
+                      data-locked={!isAuthenticated ? 'true' : 'false'}
                       onClick={() => onToggleSavePlace(place)}
-                      aria-label={
-                        isSaved
+                      title={
+                        !isAuthenticated
+                          ? `Sign in to save ${place.displayName}`
+                          : isSaved
                           ? `Remove ${place.displayName} from saved places`
                           : `Save ${place.displayName}`
                       }
-                      className={`p-1.5 rounded border transition-colors ${
+                      aria-label={
+                        !isAuthenticated
+                          ? `Sign in to save ${place.displayName}`
+                          : isSaved
+                          ? `Remove ${place.displayName} from saved places`
+                          : `Save ${place.displayName}`
+                      }
+                      className={`p-1.5 rounded border transition-colors inline-flex items-center gap-1 ${
                         isSaved
                           ? 'bg-slate-900 text-white border-slate-900'
                           : 'bg-white text-slate-600 border-slate-200 hover:text-slate-900'
@@ -1466,6 +1503,9 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
                         <BookmarkCheck className="w-3.5 h-3.5" />
                       ) : (
                         <Bookmark className="w-3.5 h-3.5" />
+                      )}
+                      {!isAuthenticated && (
+                        <Lock className="w-2.5 h-2.5 text-amber-600" />
                       )}
                     </button>
 

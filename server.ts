@@ -5,10 +5,13 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import {
+  buildQuotaFallbackReply,
   buildSystemInstruction,
   derivePlaceSearchQuery,
   determineGroundingStrategy,
   extractGroundingSources,
+  getModelFallbackChain,
+  isQuotaOrRateLimitError,
 } from './src/utils/spatialParser.ts';
 import type {
   ChatbotRoleId,
@@ -48,158 +51,126 @@ async function startServer() {
   });
 
   app.post('/api/chat', async (req, res) => {
-    try {
-      const {
-        messages = [],
-        model = 'gemini-3.8-flash',
-        roleId = 'concierge',
-        groundingMode = 'auto',
-        activeCityName = 'San Francisco, CA',
-        center = { lat: 37.7955, lng: -122.3937 },
-      }: {
-        messages: ChatHistoryTurn[];
-        model: GeminiModelId;
-        roleId: ChatbotRoleId;
-        groundingMode: GroundingMode;
-        activeCityName: string;
-        center: LatLngLiteral;
-      } = req.body || {};
+    const {
+      messages = [],
+      model = 'gemini-3.8-flash',
+      roleId = 'concierge',
+      groundingMode = 'auto',
+      activeCityName = 'San Francisco, CA',
+      center = { lat: 37.7955, lng: -122.3937 },
+    }: {
+      messages: ChatHistoryTurn[];
+      model: GeminiModelId;
+      roleId: ChatbotRoleId;
+      groundingMode: GroundingMode;
+      activeCityName: string;
+      center: LatLngLiteral;
+    } = req.body || {};
 
-      const validMessages = Array.isArray(messages)
-        ? messages.filter((m) => m && typeof m.text === 'string' && m.text.trim() !== '')
-        : [];
+    const validMessages = Array.isArray(messages)
+      ? messages.filter(
+          (m) => m && typeof m.text === 'string' && m.text.trim() !== ''
+        )
+      : [];
 
-      if (validMessages.length === 0) {
-        res.status(400).json({ error: 'Please enter a location question or message.' });
-        return;
+    if (validMessages.length === 0) {
+      res
+        .status(400)
+        .json({ error: 'Please enter a location question or message.' });
+      return;
+    }
+
+    const latestUserMessage =
+      validMessages[validMessages.length - 1].text.trim();
+    const systemInstruction = buildSystemInstruction(
+      roleId,
+      activeCityName,
+      center
+    );
+    const strategy = determineGroundingStrategy(
+      latestUserMessage,
+      groundingMode
+    );
+
+    const contents = validMessages.map((m) => ({
+      role: m.role === 'model' ? 'model' : 'user',
+      parts: [{ text: m.text }],
+    }));
+
+    const ai = getAiClient();
+    const allowedModels: GeminiModelId[] = [
+      'gemini-3.8-flash',
+      'gemini-3.1-flash-lite',
+      'gemini-flash-latest',
+      'gemini-4-argon',
+    ];
+    let targetModel: GeminiModelId = allowedModels.includes(model)
+      ? model
+      : 'gemini-3.8-flash';
+    let modelNote: string | undefined;
+
+    const callWithModelFallback = async (
+      selectedModel: GeminiModelId,
+      toolType: 'maps' | 'search'
+    ) => {
+      const config: Record<string, any> = {
+        systemInstruction,
+      };
+
+      if (toolType === 'maps') {
+        config.tools = [{ googleMaps: {} }];
+        config.toolConfig = {
+          retrievalConfig: {
+            latLng: {
+              latitude: Number(center.lat) || 37.7955,
+              longitude: Number(center.lng) || -122.3937,
+            },
+          },
+        };
+      } else {
+        config.tools = [{ googleSearch: {} }];
       }
 
-      const latestUserMessage = validMessages[validMessages.length - 1].text.trim();
-      const systemInstruction = buildSystemInstruction(roleId, activeCityName, center);
-      const strategy = determineGroundingStrategy(latestUserMessage, groundingMode);
+      const fallbackChain = getModelFallbackChain(selectedModel);
+      let lastError: unknown = null;
 
-      const contents = validMessages.map((m) => ({
-        role: m.role === 'model' ? 'model' : 'user',
-        parts: [{ text: m.text }],
-      }));
-
-      const ai = getAiClient();
-      const allowedModels: GeminiModelId[] = [
-        'gemini-3.8-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-flash-latest',
-        'gemini-4-argon',
-      ];
-      let targetModel: GeminiModelId = allowedModels.includes(model)
-        ? model
-        : 'gemini-3.8-flash';
-      let modelNote: string | undefined;
-
-      const callWithModelFallback = async (
-        selectedModel: GeminiModelId,
-        toolType: 'maps' | 'search'
-      ) => {
-        const config: Record<string, any> = {
-          systemInstruction,
-        };
-
-        if (toolType === 'maps') {
-          config.tools = [{ googleMaps: {} }];
-          config.toolConfig = {
-            retrievalConfig: {
-              latLng: {
-                latitude: Number(center.lat) || 37.7955,
-                longitude: Number(center.lng) || -122.3937,
-              },
-            },
-          };
-        } else {
-          config.tools = [{ googleSearch: {} }];
-        }
-
+      for (let i = 0; i < fallbackChain.length; i++) {
+        const candidateModel = fallbackChain[i];
         try {
-          return await ai.models.generateContent({
-            model: selectedModel,
+          const result = await ai.models.generateContent({
+            model: candidateModel,
             contents,
             config,
           });
+          if (candidateModel !== selectedModel) {
+            modelNote = `Automatically switched to ${candidateModel}`;
+          }
+          targetModel = candidateModel;
+          return result;
         } catch (err: any) {
-          const msg = String(err?.message || err || '');
-          if (selectedModel !== 'gemini-3.8-flash') {
-            modelNote = 'Automatically switched to gemini-3.8-flash';
-            targetModel = 'gemini-3.8-flash';
-            return await ai.models.generateContent({
-              model: 'gemini-3.8-flash',
-              contents,
-              config,
-            });
-          }
-          throw new Error(msg);
-        }
-      };
-
-      let replyText = '';
-      const allSources: GroundedSource[] = [];
-
-      if (strategy === 'maps') {
-        const response = await callWithModelFallback(targetModel, 'maps');
-        replyText = response.text || '';
-        const mapsSources = extractGroundingSources(
-          response.candidates?.[0]?.groundingMetadata
-        );
-        allSources.push(...mapsSources);
-      } else if (strategy === 'search') {
-        // Per prompt requirement: Use gemini-3.8-flash (with googleSearch tool) for Search Grounding
-        const searchModel: GeminiModelId =
-          targetModel === 'gemini-4-argon' ? 'gemini-4-argon' : 'gemini-3.8-flash';
-        const response = await callWithModelFallback(searchModel, 'search');
-        replyText = response.text || '';
-        const webSources = extractGroundingSources(
-          response.candidates?.[0]?.groundingMetadata
-        );
-        allSources.push(...webSources);
-      } else {
-        // 'both' strategy: Run primary multi-turn with Maps Grounding + parallel Search Grounding on gemini-3.8-flash
-        const [mapsResult, searchResult] = await Promise.allSettled([
-          callWithModelFallback(targetModel, 'maps'),
-          ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: `${latestUserMessage} (Focus location: ${activeCityName}, ${center.lat.toFixed(4)}, ${center.lng.toFixed(4)})`,
-            config: {
-              systemInstruction:
-                'Provide concise, up-to-date local facts, current hours/events, and verified web context in 2-3 sentences.',
-              tools: [{ googleSearch: {} }],
-            },
-          }),
-        ]);
-
-        if (mapsResult.status === 'fulfilled') {
-          replyText = mapsResult.value.text || '';
-          const mapsSources = extractGroundingSources(
-            mapsResult.value.candidates?.[0]?.groundingMetadata
-          );
-          allSources.push(...mapsSources);
-        }
-
-        if (searchResult.status === 'fulfilled') {
-          const webSources = extractGroundingSources(
-            searchResult.value.candidates?.[0]?.groundingMetadata
-          );
-          allSources.push(...webSources);
-          if (!replyText && searchResult.value.text) {
-            replyText = searchResult.value.text;
-          }
-        }
-
-        if (mapsResult.status === 'rejected' && searchResult.status === 'rejected') {
-          throw mapsResult.reason;
+          lastError = err;
         }
       }
 
-      // Deduplicate combined sources by URI
+      throw lastError || new Error('All Gemini models failed.');
+    };
+
+    try {
+      const primaryToolType: 'maps' | 'search' =
+        strategy === 'search' ? 'search' : 'maps';
+      const response = await callWithModelFallback(
+        targetModel,
+        primaryToolType
+      );
+      const replyText = response.text || '';
+      const extractedSources = extractGroundingSources(
+        response.candidates?.[0]?.groundingMetadata
+      );
+
+      // Deduplicate sources by URI
       const uniqueSources: GroundedSource[] = [];
       const seen = new Set<string>();
-      for (const src of allSources) {
+      for (const src of extractedSources) {
         if (!seen.has(src.uri)) {
           seen.add(src.uri);
           uniqueSources.push(src);
@@ -223,17 +194,46 @@ async function startServer() {
         strategyUsed: strategy,
       });
     } catch (error: any) {
-      const rawMessage = String(error?.message || error || 'Unknown Gemini error');
-      console.error('Error in /api/chat:', rawMessage);
+      const rawMessage = String(
+        error?.message || error || 'Unknown Gemini error'
+      );
 
-      // Provide helpful guidance per gemini-api skill error rules
+      // When Gemini API returns 429 RESOURCE_EXHAUSTED across all fallback models,
+      // serve a graceful live-map spatial fallback response so the app continues plotting places seamlessly.
+      if (isQuotaOrRateLimitError(rawMessage)) {
+        console.warn(
+          'Gemini API quota reached (429 RESOURCE_EXHAUSTED); serving live Google Maps spatial fallback.'
+        );
+        const fallbackPayload = buildQuotaFallbackReply({
+          userQuery: latestUserMessage,
+          roleId,
+          activeCityName,
+          center,
+        });
+
+        res.json({
+          reply: fallbackPayload.reply,
+          sources: fallbackPayload.sources,
+          suggestedPlaceQuery: fallbackPayload.suggestedPlaceQuery,
+          usedModel: targetModel,
+          modelNote: fallbackPayload.modelNote,
+          strategyUsed: strategy,
+          quotaFallback: true,
+        });
+        return;
+      }
+
+      console.warn('Notice in /api/chat:', rawMessage);
+
       let userFriendlyError = rawMessage;
-      if (rawMessage.includes('403') || rawMessage.includes('PERMISSION_DENIED') || rawMessage.includes('API_KEY_INVALID') || rawMessage.includes('MISSING_KEY')) {
+      if (
+        rawMessage.includes('403') ||
+        rawMessage.includes('PERMISSION_DENIED') ||
+        rawMessage.includes('API_KEY_INVALID') ||
+        rawMessage.includes('MISSING_KEY')
+      ) {
         userFriendlyError =
           'Unable to verify Gemini API key permissions. Please check your API key configuration in the Settings > Secrets panel.';
-      } else if (rawMessage.includes('429') || rawMessage.includes('RESOURCE_EXHAUSTED')) {
-        userFriendlyError =
-          'API rate limit or quota reached. Upgrading to a paid tier in Settings > Secrets increases your quota.';
       }
 
       res.status(500).json({

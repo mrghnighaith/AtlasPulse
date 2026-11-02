@@ -4,6 +4,9 @@ import {
   validateAuthInput,
   formatFirebaseAuthError,
   getUserInitials,
+  checkFeatureAccess,
+  isBotRoleGatedForGuest,
+  isModelGatedForGuest,
 } from './authValidator';
 
 test('validateAuthInput validates signin, signup, and reset modes cleanly', () => {
@@ -70,3 +73,25 @@ test('getUserInitials extracts 1-2 uppercase initials from displayName or email'
   assert.equal(getUserInitials(null, 'explorer@atlaspulse.io'), 'EX');
   assert.equal(getUserInitials('', ''), 'U');
 });
+
+test('checkFeatureAccess, isBotRoleGatedForGuest, and isModelGatedForGuest restrict member-only features when logged out', () => {
+  assert.equal(isBotRoleGatedForGuest('concierge'), false);
+  assert.equal(isBotRoleGatedForGuest('culinary'), false);
+  assert.equal(isBotRoleGatedForGuest('nightlife'), true);
+  assert.equal(isBotRoleGatedForGuest('urbanist'), true);
+  assert.equal(isBotRoleGatedForGuest('work'), true);
+
+  assert.equal(isModelGatedForGuest('gemini-3.8-flash'), false);
+  assert.equal(isModelGatedForGuest('gemini-3.1-flash-lite'), false);
+  assert.equal(isModelGatedForGuest('gemini-4-argon'), true);
+  assert.equal(isModelGatedForGuest('gemini-flash-latest'), true);
+
+  const guestRouteAccess = checkFeatureAccess('route_planner', false);
+  assert.equal(guestRouteAccess.allowed, false);
+  assert.ok(guestRouteAccess.featureTitle.includes('Route Planner'));
+  assert.ok(guestRouteAccess.benefits.length >= 2);
+
+  const memberRouteAccess = checkFeatureAccess('route_planner', true);
+  assert.equal(memberRouteAccess.allowed, true);
+});
+

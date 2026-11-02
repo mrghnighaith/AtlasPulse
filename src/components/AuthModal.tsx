@@ -17,6 +17,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import {
   AuthFormMode,
+  FeatureAccessCheckResult,
   validateAuthInput,
   getUserInitials,
 } from '../utils/authValidator';
@@ -27,6 +28,7 @@ interface AuthModalProps {
   onClose: () => void;
   savedPlacesCount: number;
   initialMode?: AuthFormMode;
+  gatedFeature?: FeatureAccessCheckResult | null;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -34,6 +36,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   savedPlacesCount,
   initialMode = 'signin',
+  gatedFeature = null,
 }) => {
   const {
     user,
@@ -63,6 +66,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setMode(initialMode);
       setLocalError(null);
       setStatusNotice(null);
       setProfileSavedNotice(null);
@@ -71,7 +75,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setProfileNameInput(user.displayName || user.email?.split('@')[0] || '');
       }
     }
-  }, [isOpen, user, clearAuthError]);
+  }, [isOpen, initialMode, user, clearAuthError]);
 
   if (!isOpen) return null;
 
@@ -194,7 +198,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <p className="text-xs text-slate-500">
                 {user
                   ? 'Connected to Firebase Authentication & Firestore'
-                  : 'Sync saved places & itineraries across all your devices'}
+                  : 'Sync saved places & unlock member-only spatial tools'}
               </p>
             </div>
           </div>
@@ -338,6 +342,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           ) : (
             /* Unauthenticated Sign In / Sign Up / Reset View */
             <>
+              {/* Gated Feature Notice Banner (shown when user clicked a locked feature) */}
+              {gatedFeature && !gatedFeature.allowed && (
+                <div
+                  data-testid="auth-modal-feature-gate-banner"
+                  className="p-3.5 rounded-xl bg-amber-50 border border-amber-200/90 space-y-2"
+                >
+                  <div className="flex items-center gap-2 text-xs font-bold text-amber-950">
+                    <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span>Sign-In Required: {gatedFeature.featureTitle}</span>
+                  </div>
+                  <p className="text-xs text-amber-900 leading-relaxed">
+                    {gatedFeature.reason}
+                  </p>
+                  <ul className="space-y-1 pt-0.5">
+                    {gatedFeature.benefits.map((b, idx) => (
+                      <li
+                        key={idx}
+                        className="text-[11px] text-amber-800 flex items-center gap-1.5"
+                      >
+                        <CheckCircle2 className="w-3 h-3 text-amber-600 shrink-0" />
+                        <span>{b}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {/* Mode Switcher Tabs */}
               <div
                 className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200/80"

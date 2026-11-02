@@ -164,3 +164,110 @@ export function getUserInitials(displayName?: string | null, email?: string | nu
   }
   return source.slice(0, 2).toUpperCase();
 }
+
+export type GatedFeatureId =
+  | 'save_places'
+  | 'route_planner'
+  | 'specialist_bots'
+  | 'pro_models'
+  | 'saved_itinerary_tab';
+
+export interface FeatureAccessCheckResult {
+  allowed: boolean;
+  featureId: GatedFeatureId;
+  featureTitle: string;
+  reason: string;
+  benefits: string[];
+}
+
+export const GATED_FEATURES_CATALOG: Record<
+  GatedFeatureId,
+  { title: string; reason: string; benefits: string[] }
+> = {
+  save_places: {
+    title: 'Save & Bookmark Places to Cloud',
+    reason:
+      'Saving places to your personal itinerary requires an authenticated AtlasPulse account.',
+    benefits: [
+      'Bookmark unlimited Google Maps locations across any city',
+      'Real-time cloud backup and sync via Firebase Firestore',
+      'Use saved places in the Multi-Stop Route Planner',
+    ],
+  },
+  route_planner: {
+    title: 'Multi-Stop Route Planner & Directions',
+    reason:
+      'Drawing multi-stop walking, driving, cycling, and transit polylines on the map requires you to be signed in.',
+    benefits: [
+      'Connect 2 or more saved places with Google Directions polylines',
+      'Compare Walking, Driving, Cycling, and Transit travel times',
+      'Customize route colors and reorder stops interactively',
+    ],
+  },
+  specialist_bots: {
+    title: 'Specialist AI Personas (6 Pro Bots)',
+    reason:
+      'Guest sessions include Local Concierge and Culinary Scout. Sign in to unlock all 8 specialized spatial AI bots.',
+    benefits: [
+      'Unlock Urban Historian, Mobility & Access, and Nightlife & Music bots',
+      'Unlock Nature & Trails, Remote Work Scout, and Family & Access bots',
+      'Tailored grounded system instructions for every travel style',
+    ],
+  },
+  pro_models: {
+    title: 'Advanced Gemini Spatial Models',
+    reason:
+      'Switching to Gemini 4 Argon or Gemini Flash Latest requires an authenticated member session.',
+    benefits: [
+      'Access Gemini 4 Argon for deep multi-constraint spatial synthesis',
+      'Access Gemini Flash Latest for rolling grounded search updates',
+      'Full multi-turn conversation continuity across roles',
+    ],
+  },
+  saved_itinerary_tab: {
+    title: 'Saved Places Itinerary & Cloud Sync',
+    reason:
+      'Your Saved Places Itinerary and AI Route Builder are member-only features protected by Firebase Authentication.',
+    benefits: [
+      'Access your curated city bookmarks on both PC and Android Browser',
+      'One-click AI itinerary sequencing and route drawing',
+      'Protected per-user storage in Firebase Cloud Firestore',
+    ],
+  },
+};
+
+const FREE_GUEST_BOT_ROLES = new Set(['concierge', 'culinary']);
+const GATED_PRO_MODELS = new Set(['gemini-4-argon', 'gemini-flash-latest']);
+
+/**
+ * Returns true if the given AI bot role requires the user to be logged in.
+ */
+export function isBotRoleGatedForGuest(roleId: string): boolean {
+  return !FREE_GUEST_BOT_ROLES.has(roleId);
+}
+
+/**
+ * Returns true if the given Gemini model requires the user to be logged in.
+ */
+export function isModelGatedForGuest(modelId: string): boolean {
+  return GATED_PRO_MODELS.has(modelId);
+}
+
+/**
+ * Evaluates whether a user can access a specific feature based on authentication status.
+ */
+export function checkFeatureAccess(
+  featureId: GatedFeatureId,
+  isAuthenticated: boolean
+): FeatureAccessCheckResult {
+  const meta =
+    GATED_FEATURES_CATALOG[featureId] || GATED_FEATURES_CATALOG.save_places;
+  return {
+    allowed: Boolean(isAuthenticated),
+    featureId,
+    featureTitle: meta.title,
+    reason: meta.reason,
+    benefits: meta.benefits,
+  };
+}
+
