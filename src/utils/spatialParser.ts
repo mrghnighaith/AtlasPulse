@@ -12,8 +12,20 @@ export interface GroundedSource {
 }
 
 export type GroundingMode = 'auto' | 'maps' | 'search';
-export type ChatbotRoleId = 'concierge' | 'urbanist' | 'transit' | 'culinary';
-export type GeminiModelId = 'gemini-3.8-flash' | 'gemini-3.1-flash-lite' | 'gemini-4-argon';
+export type ChatbotRoleId =
+  | 'concierge'
+  | 'culinary'
+  | 'urbanist'
+  | 'transit'
+  | 'nightlife'
+  | 'outdoors'
+  | 'work'
+  | 'family';
+export type GeminiModelId =
+  | 'gemini-3.8-flash'
+  | 'gemini-3.1-flash-lite'
+  | 'gemini-flash-latest'
+  | 'gemini-4-argon';
 export type MapStyleId = 'standard' | 'roadmap' | 'satellite' | 'hybrid';
 
 export interface MapStyleConfig {
@@ -59,36 +71,131 @@ export function resolveMapStyleConfig(styleId: string): MapStyleConfig {
 export interface ChatbotRole {
   id: ChatbotRoleId;
   label: string;
+  specialtyBadge: string;
   shortDesc: string;
   defaultQuery: string;
+  recommendedGrounding: GroundingMode;
+  samplePrompts: string[];
 }
 
 export const CHATBOT_ROLES: ChatbotRole[] = [
   {
     id: 'concierge',
     label: 'Local Concierge',
+    specialtyBadge: 'Discovery',
     shortDesc: 'Neighborhood gems, hours, ratings, and curated itineraries',
-    defaultQuery: 'What are the highest-rated specialty coffee roasters and bakeries near this area?',
+    defaultQuery:
+      'What are the highest-rated specialty coffee roasters and bakeries near this area?',
+    recommendedGrounding: 'auto',
+    samplePrompts: [
+      'What are the highest-rated specialty coffee roasters and bakeries near this area?',
+      'Plan a 3-stop walkable afternoon itinerary around here with ratings and hours.',
+      'What hidden neighborhood gems do locals love within 15 minutes of here?',
+    ],
   },
   {
     id: 'culinary',
     label: 'Culinary Scout',
+    specialtyBadge: 'Dining & Coffee',
     shortDesc: 'Dining institutions, regional dishes, and late-night kitchens',
-    defaultQuery: 'Find iconic local restaurants with great outdoor or counter seating nearby.',
+    defaultQuery:
+      'Find iconic local restaurants with great outdoor or counter seating nearby.',
+    recommendedGrounding: 'maps',
+    samplePrompts: [
+      'Find iconic local restaurants with great outdoor or counter seating nearby.',
+      'Where can I find authentic regional specialties and standout street food around here?',
+      'Which highly rated bakeries, dessert spots, or wine bars are open right now?',
+    ],
   },
   {
     id: 'urbanist',
     label: 'Urban Historian',
+    specialtyBadge: 'Culture & Design',
     shortDesc: 'Architecture, landmarks, museums, and cultural context',
-    defaultQuery: 'What notable architectural landmarks, public plazas, and museums are within walking distance?',
+    defaultQuery:
+      'What notable architectural landmarks, public plazas, and museums are within walking distance?',
+    recommendedGrounding: 'auto',
+    samplePrompts: [
+      'What notable architectural landmarks, public plazas, and museums are within walking distance?',
+      'Tell me the historical backstory of this neighborhood and its oldest civic buildings.',
+      'Which contemporary art galleries, cultural centers, or historic theaters are nearby?',
+    ],
   },
   {
     id: 'transit',
     label: 'Mobility & Access',
+    specialtyBadge: 'Transit & Routes',
     shortDesc: 'Transit hubs, walkability, EV stations, and route logistics',
-    defaultQuery: 'Where are the main transit hubs, ferry terminals, or bike-friendly corridors around here?',
+    defaultQuery:
+      'Where are the main transit hubs, ferry terminals, or bike-friendly corridors around here?',
+    recommendedGrounding: 'maps',
+    samplePrompts: [
+      'Where are the main transit hubs, ferry terminals, or bike-friendly corridors around here?',
+      'How walkable is this corridor and what are the best rail or bus connections nearby?',
+      'Where are the nearest public parking garages and EV charging stations?',
+    ],
+  },
+  {
+    id: 'nightlife',
+    label: 'Nightlife & Music',
+    specialtyBadge: 'After Hours',
+    shortDesc: 'Jazz clubs, listening bars, rooftop lounges, and live gigs',
+    defaultQuery:
+      'Where are the best live music venues, jazz clubs, and craft cocktail lounges near here?',
+    recommendedGrounding: 'auto',
+    samplePrompts: [
+      'Where are the best live music venues, jazz clubs, and craft cocktail lounges near here?',
+      'Recommend a rooftop bar or listening lounge with great ambiance for tonight.',
+      'What late-night dining spots and evening entertainment are open past 10 PM nearby?',
+    ],
+  },
+  {
+    id: 'outdoors',
+    label: 'Nature & Trails',
+    specialtyBadge: 'Parks & Views',
+    shortDesc: 'Scenic overlooks, urban parks, botanical gardens, and coastal walks',
+    defaultQuery:
+      'What are the most scenic parks, waterfront trails, and viewpoints near this location?',
+    recommendedGrounding: 'maps',
+    samplePrompts: [
+      'What are the most scenic parks, waterfront trails, and viewpoints near this location?',
+      'Where are the best golden-hour photography overlooks or botanical gardens nearby?',
+      'Find dog-friendly parks and green walking loops within a short distance.',
+    ],
+  },
+  {
+    id: 'work',
+    label: 'Remote Work Scout',
+    specialtyBadge: 'Laptop & Wi-Fi',
+    shortDesc: 'Laptop-friendly cafes, quiet libraries, and coworking lounges',
+    defaultQuery:
+      'Which cafes, public libraries, or lounges nearby are best for remote work and studying?',
+    recommendedGrounding: 'maps',
+    samplePrompts: [
+      'Which cafes, public libraries, or lounges nearby are best for remote work and studying?',
+      'Where can I find spacious seating, reliable Wi-Fi, and great espresso for a 2-hour work block?',
+      'Are there quiet reading rooms, hotel lobbies, or day-pass coworking spaces around here?',
+    ],
+  },
+  {
+    id: 'family',
+    label: 'Family & Access',
+    specialtyBadge: 'All-Ages & Step-Free',
+    shortDesc: 'Kid-friendly attractions, interactive museums, and step-free access',
+    defaultQuery:
+      'What are the best family-friendly attractions, interactive museums, and accessible parks nearby?',
+    recommendedGrounding: 'auto',
+    samplePrompts: [
+      'What are the best family-friendly attractions, interactive museums, and accessible parks nearby?',
+      'Recommend stroller-friendly and step-free places to visit with casual family dining nearby.',
+      'Where are hands-on science centers, playgrounds, or calm rest stops in this area?',
+    ],
   },
 ];
+
+export function getBotRoleById(roleId?: string): ChatbotRole {
+  return CHATBOT_ROLES.find((r) => r.id === roleId) || CHATBOT_ROLES[0];
+}
 
 /**
  * Decides whether a user prompt should use Google Maps Grounding, Google Search Grounding, or both.
@@ -276,11 +383,19 @@ export function buildSystemInstruction(
     concierge:
       'You are AtlasPulse Local Concierge, a spatial intelligence assistant specializing in neighborhood discovery, local institutions, hours, ratings, and practical visitor advice.',
     culinary:
-      'You are AtlasPulse Culinary Scout, an expert food and dining specialist focusing on authentic local kitchens, specialty coffee roasters, bakeries, and dining logistics.',
+      'You are AtlasPulse Culinary Scout, an expert food and dining specialist focusing on authentic local kitchens, specialty coffee roasters, bakeries, signature regional dishes, and dining logistics.',
     urbanist:
-      'You are AtlasPulse Urban Historian & Architect, focusing on civic landmarks, architectural heritage, museums, public plazas, and neighborhood history.',
+      'You are AtlasPulse Urban Historian & Architect, focusing on civic landmarks, architectural heritage, museums, galleries, public plazas, and neighborhood history.',
     transit:
-      'You are AtlasPulse Mobility & Transit Planner, focusing on walkability, public transit connections, ferry/rail access, cycling routes, and travel times.',
+      'You are AtlasPulse Mobility & Transit Planner, focusing on walkability, public transit connections, ferry/rail access, cycling routes, EV charging, and travel times.',
+    nightlife:
+      'You are AtlasPulse Nightlife & Live Music Curator, specializing in jazz clubs, vinyl listening bars, rooftop cocktail lounges, indie concert venues, and vibrant late-night neighborhoods.',
+    outdoors:
+      'You are AtlasPulse Nature & Trails Explorer, specializing in urban parks, botanical gardens, coastal and riverfront trails, scenic viewpoints, and outdoor recreation.',
+    work:
+      'You are AtlasPulse Remote Work & Study Scout, specializing in laptop-friendly specialty cafes, quiet public libraries, coworking lounges, seating comfort, and work-friendly amenities.',
+    family:
+      'You are AtlasPulse Family & Accessibility Guide, specializing in all-ages attractions, interactive science and children’s museums, playgrounds, step-free wheelchair/stroller accessibility, and welcoming family dining.',
   };
 
   const baseRole = rolePrompts[roleId] || rolePrompts.concierge;

@@ -10,6 +10,8 @@ import {
   resolveMapStyleConfig,
   MAP_STYLE_OPTIONS,
   calculateMultiStopMetrics,
+  CHATBOT_ROLES,
+  getBotRoleById,
 } from './spatialParser';
 
 test('resolveMapStyleConfig resolves standard, roadmap, satellite, and hybrid styles', () => {
@@ -97,14 +99,47 @@ test('calculateHaversineDistanceKm and formatCoordinate return accurate values',
   assert.equal(formatCoordinate(37.7955, -122.3937), '37.7955°N, 122.3937°W');
 });
 
-test('buildSystemInstruction includes active role, city, and coordinates', () => {
-  const instruction = buildSystemInstruction('urbanist', 'London, UK', {
-    lat: 51.5074,
-    lng: -0.1278,
-  });
-  assert.ok(instruction.includes('Urban Historian'));
-  assert.ok(instruction.includes('London, UK'));
-  assert.ok(instruction.includes('51.5074'));
+test('CHATBOT_ROLES defines 8 specialized AI bots with badges, samplePrompts, and system instructions', () => {
+  assert.equal(CHATBOT_ROLES.length, 8);
+  const expectedIds = [
+    'concierge',
+    'culinary',
+    'urbanist',
+    'transit',
+    'nightlife',
+    'outdoors',
+    'work',
+    'family',
+  ];
+  assert.deepEqual(
+    CHATBOT_ROLES.map((r) => r.id),
+    expectedIds
+  );
+
+  for (const role of CHATBOT_ROLES) {
+    assert.ok(role.specialtyBadge.length > 0);
+    assert.ok(role.samplePrompts.length >= 2);
+    assert.equal(getBotRoleById(role.id).id, role.id);
+
+    const instruction = buildSystemInstruction(role.id, 'London, UK', {
+      lat: 51.5074,
+      lng: -0.1278,
+    });
+    assert.ok(instruction.includes('London, UK'));
+    assert.ok(instruction.includes('51.5074'));
+  }
+
+  assert.equal(getBotRoleById('unknown-bot').id, 'concierge');
+  assert.ok(
+    buildSystemInstruction('nightlife', 'Tokyo, Japan', { lat: 35.6762, lng: 139.6503 }).includes(
+      'Nightlife & Live Music Curator'
+    )
+  );
+  assert.ok(
+    buildSystemInstruction('work', 'New York, NY', { lat: 40.7128, lng: -74.006 }).includes(
+      'Remote Work & Study Scout'
+    )
+  );
 });
 
 test('calculateMultiStopMetrics handles zero, single, and multiple coordinates', () => {

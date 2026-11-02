@@ -87,6 +87,7 @@ async function startServer() {
       const allowedModels: GeminiModelId[] = [
         'gemini-3.8-flash',
         'gemini-3.1-flash-lite',
+        'gemini-flash-latest',
         'gemini-4-argon',
       ];
       let targetModel: GeminiModelId = allowedModels.includes(model)

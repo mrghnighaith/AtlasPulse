@@ -3,6 +3,10 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  updateProfile,
   signOut as firebaseSignOut,
   User,
   onAuthStateChanged,
@@ -47,7 +51,7 @@ export interface FirestoreErrorInfo {
     email?: string | null;
     emailVerified?: boolean | null;
     isAnonymous?: boolean | null;
-    tenantId?: string | null;
+    tenantId?: boolean | string | null;
     providerInfo?: {
       providerId?: string | null;
       email?: string | null;
@@ -98,44 +102,101 @@ export async function testConnection(): Promise<void> {
 // Run connection check
 void testConnection();
 
+async function upsertUserProfile(user: User, customDisplayName?: string): Promise<void> {
+  const userDocRef = doc(db, 'users', user.uid);
+  const now = new Date().toISOString();
+  const profileData = {
+    id: user.uid,
+    email: user.email || '',
+    displayName: (customDisplayName || user.displayName || user.email?.split('@')[0] || 'Explorer').slice(0, 128),
+    photoURL: (user.photoURL || '').slice(0, 1024),
+    updatedAt: now,
+  };
+
+  try {
+    const snap = await getDoc(userDocRef);
+    if (!snap.exists()) {
+      await setDoc(userDocRef, {
+        ...profileData,
+        createdAt: now,
+      });
+    } else {
+      await setDoc(userDocRef, profileData, { merge: true });
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
+  }
+}
+
 // Google Sign In with Popup
 export async function signInWithGoogle(): Promise<User> {
   try {
     const cred = await signInWithPopup(auth, googleProvider);
     const user = cred.user;
-
-    // Create or update user profile document
     if (user) {
-      const userDocRef = doc(db, 'users', user.uid);
-      const now = new Date().toISOString();
-      const profileData = {
-        id: user.uid,
-        email: user.email || '',
-        displayName: user.displayName || 'Explorer',
-        photoURL: user.photoURL || '',
-        updatedAt: now,
-      };
-
-      try {
-        const snap = await getDoc(userDocRef);
-        if (!snap.exists()) {
-          await setDoc(userDocRef, {
-            ...profileData,
-            createdAt: now,
-          });
-        } else {
-          await setDoc(userDocRef, profileData, { merge: true });
-        }
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
-      }
+      await upsertUserProfile(user);
     }
-
     return user;
   } catch (err: any) {
     console.error('Firebase Auth Sign-In Error:', err);
     throw err;
   }
+}
+
+// Email & Password Sign In
+export async function signInWithEmail(email: string, password: string): Promise<User> {
+  try {
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const user = cred.user;
+    if (user) {
+      await upsertUserProfile(user);
+    }
+    return user;
+  } catch (err: any) {
+    console.error('Firebase Email Sign-In Error:', err);
+    throw err;
+  }
+}
+
+// Email & Password Account Registration
+export async function registerWithEmail(
+  email: string,
+  password: string,
+  displayName: string
+): Promise<User> {
+  try {
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    const user = cred.user;
+    if (user) {
+      await updateProfile(user, { displayName });
+      await upsertUserProfile(user, displayName);
+    }
+    return user;
+  } catch (err: any) {
+    console.error('Firebase Registration Error:', err);
+    throw err;
+  }
+}
+
+// Send Password Reset Email
+export async function sendPasswordReset(email: string): Promise<void> {
+  try {
+    await sendPasswordResetEmail(auth, email);
+  } catch (err: any) {
+    console.error('Firebase Password Reset Error:', err);
+    throw err;
+  }
+}
+
+// Update current user display name in Firebase Auth and Firestore
+export async function updateUserProfileName(displayName: string): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('You must be signed in to update your profile.');
+  }
+  const trimmed = displayName.trim().slice(0, 128);
+  await updateProfile(currentUser, { displayName: trimmed });
+  await upsertUserProfile(currentUser, trimmed);
 }
 
 // Sign Out

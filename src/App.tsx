@@ -38,6 +38,8 @@ import { ChatThreadPanel } from './components/ChatThreadPanel';
 import { InteractiveMapPanel } from './components/InteractiveMapPanel';
 import { AtlasPulseLogo } from './components/AtlasPulseLogo';
 import { PlaceReviewsSummary } from './components/live-places';
+import { AuthModal } from './components/AuthModal';
+import { AuthFormMode, getUserInitials } from './utils/authValidator';
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
@@ -45,7 +47,7 @@ function createInitialGreeting(cityName: string): ChatMessage {
   return {
     id: 'welcome-msg',
     role: 'model',
-    text: `Welcome to **AtlasPulse**. I am grounded in real-time **Google Maps** and **Google Search** data around **${cityName}**.\n\nAsk me about neighborhood restaurants, coffee roasters, museums, transit connections, or live local events—and I will cite verified Google Maps & Search sources while plotting matching places directly on the interactive map.`,
+    text: `Welcome to **AtlasPulse**. I am grounded in real-time **Google Maps** and **Google Search** data around **${cityName}**.\n\nSwitch between **8 specialized AI bots** above—including **Local Concierge**, **Culinary Scout**, **Urban Historian**, **Mobility & Access**, **Nightlife & Music**, **Nature & Trails**, **Remote Work Scout**, and **Family & Access**—to explore verified places and plot them directly on the map.`,
     timestamp: new Date().toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit',
@@ -92,6 +94,8 @@ export default function App() {
   const [livePlaces, setLivePlaces] = useState<LivePlaceItem[]>([]);
   const [selectedPlace, setSelectedPlace] = useState<LivePlaceItem | null>(null);
   const [reviewModalPlace, setReviewModalPlace] = useState<LivePlaceItem | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<AuthFormMode>('signin');
   const [routePlaceIds, setRoutePlaceIds] = useState<string[]>([]);
   const [savedPlaces, setSavedPlaces] = useState<LivePlaceItem[]>(() => {
     try {
@@ -395,28 +399,36 @@ export default function App() {
         <div className="flex items-center gap-3 shrink-0">
           {user ? (
             <div className="flex items-center gap-2 bg-slate-100 py-1 pl-1.5 pr-2 rounded-full border border-slate-200">
-              {user.photoURL ? (
-                <img
-                  src={user.photoURL}
-                  alt={user.displayName || 'User'}
-                  className="w-5 h-5 rounded-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              ) : (
-                <div className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-semibold flex items-center justify-center">
-                  {(user.displayName || user.email || 'U')[0].toUpperCase()}
-                </div>
-              )}
-              <span className="text-xs font-medium text-slate-800 max-w-[100px] sm:max-w-[130px] truncate">
-                {user.displayName || user.email?.split('@')[0]}
-              </span>
-              <span
-                className="hidden md:inline-flex items-center gap-0.5 text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-medium border border-emerald-200"
-                title="Your saved places and itineraries are synced with Firebase Firestore"
+              <button
+                type="button"
+                onClick={() => setIsAuthModalOpen(true)}
+                data-testid="open-profile-modal-btn"
+                title="View account profile and Firebase Cloud Sync settings"
+                className="flex items-center gap-2 hover:opacity-85 transition-opacity"
               >
-                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                <span>Synced</span>
-              </span>
+                {user.photoURL ? (
+                  <img
+                    src={user.photoURL}
+                    alt={user.displayName || 'User'}
+                    className="w-5 h-5 rounded-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-semibold flex items-center justify-center">
+                    {getUserInitials(user.displayName, user.email)}
+                  </div>
+                )}
+                <span className="text-xs font-medium text-slate-800 max-w-[100px] sm:max-w-[130px] truncate">
+                  {user.displayName || user.email?.split('@')[0]}
+                </span>
+                <span
+                  className="hidden md:inline-flex items-center gap-0.5 text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-medium border border-emerald-200"
+                  title="Your saved places and itineraries are synced with Firebase Firestore"
+                >
+                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                  <span>Synced</span>
+                </span>
+              </button>
               <button
                 type="button"
                 onClick={() => void signOut()}
@@ -430,8 +442,12 @@ export default function App() {
           ) : (
             <button
               type="button"
-              onClick={() => void signInWithGoogle()}
+              onClick={() => {
+                setAuthModalMode('signin');
+                setIsAuthModalOpen(true);
+              }}
               disabled={isAuthLoading}
+              data-testid="open-auth-modal-btn"
               className="px-3 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-2 whitespace-nowrap shadow-xs disabled:opacity-50"
             >
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
@@ -452,7 +468,7 @@ export default function App() {
                   d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
                 />
               </svg>
-              <span>{isAuthLoading ? 'Connecting...' : 'Sign In with Google'}</span>
+              <span>{isAuthLoading ? 'Connecting...' : 'Sign In / Account'}</span>
             </button>
           )}
 
@@ -820,17 +836,33 @@ export default function App() {
                       <span>Back up and sync your saved places</span>
                     </div>
                     <p className="text-xs text-blue-800">
-                      Sign in with your Google account to automatically store bookmarks in Firebase Firestore and access your trip across devices.
+                      Sign in with Google or create an email account to automatically store bookmarks in Firebase Firestore and access your trip across devices.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void signInWithGoogle()}
-                    disabled={isAuthLoading}
-                    className="px-3 py-1.5 text-xs font-medium text-slate-900 bg-white border border-blue-200 rounded-lg hover:bg-blue-100/50 transition-colors whitespace-nowrap shrink-0 shadow-xs"
-                  >
-                    Sign In with Google
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthModalMode('signin');
+                        setIsAuthModalOpen(true);
+                      }}
+                      disabled={isAuthLoading}
+                      className="px-3 py-1.5 text-xs font-medium text-slate-900 bg-white border border-blue-200 rounded-lg hover:bg-blue-100/50 transition-colors whitespace-nowrap shrink-0 shadow-xs"
+                    >
+                      Sign In
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthModalMode('signup');
+                        setIsAuthModalOpen(true);
+                      }}
+                      disabled={isAuthLoading}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap shrink-0 shadow-xs"
+                    >
+                      Create Account
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -925,6 +957,14 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* Authentication & Cloud Sync Modal */}
+          <AuthModal
+            isOpen={isAuthModalOpen}
+            onClose={() => setIsAuthModalOpen(false)}
+            savedPlacesCount={savedPlaces.length}
+            initialMode={authModalMode}
+          />
         </APIProvider>
       </main>
     </div>
