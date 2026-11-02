@@ -14,12 +14,21 @@ import {
   getBotRoleById,
 } from './spatialParser';
 
-test('resolveMapStyleConfig resolves standard, roadmap, satellite, and hybrid styles', () => {
-  assert.equal(MAP_STYLE_OPTIONS.length, 4);
+test('resolveMapStyleConfig resolves standard, roadmap, satellite, hybrid, and high-contrast styles', () => {
+  assert.equal(MAP_STYLE_OPTIONS.length, 5);
   assert.equal(resolveMapStyleConfig('standard').mapTypeId, 'roadmap');
   assert.equal(resolveMapStyleConfig('roadmap').mapTypeId, 'roadmap');
   assert.equal(resolveMapStyleConfig('satellite').mapTypeId, 'satellite');
   assert.equal(resolveMapStyleConfig('hybrid').mapTypeId, 'hybrid');
+
+  const highContrast = resolveMapStyleConfig('high-contrast');
+  assert.equal(highContrast.id, 'high-contrast');
+  assert.equal(highContrast.isHighContrast, true);
+  assert.equal(highContrast.colorScheme, 'DARK');
+  assert.equal(highContrast.pinPalette.defaultBg, '#facc15');
+  assert.equal(highContrast.pinPalette.defaultGlyph, '#000000');
+  assert.ok(Array.isArray(highContrast.customMapStyles) && highContrast.customMapStyles.length > 0);
+
   assert.equal(resolveMapStyleConfig('unknown').id, 'standard');
 });
 

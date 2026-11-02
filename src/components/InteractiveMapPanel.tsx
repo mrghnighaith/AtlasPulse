@@ -31,6 +31,7 @@ import {
   Maximize2,
   Trash2,
   AlertCircle,
+  Contrast,
 } from 'lucide-react';
 import {
   calculateHaversineDistanceKm,
@@ -38,6 +39,7 @@ import {
   formatCoordinate,
   LatLngLiteral,
   MAP_STYLE_OPTIONS,
+  MapPinPalette,
   MapStyleId,
   resolveMapStyleConfig,
   ROUTE_COLOR_PRESETS,
@@ -86,6 +88,8 @@ interface PlaceMarkerItemProps {
   onViewReviews?: (place: LivePlaceItem) => void;
   routeStopIndex?: number;
   routeColor?: string;
+  pinPalette: MapPinPalette;
+  isHighContrast?: boolean;
 }
 
 const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
@@ -98,9 +102,35 @@ const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
   onViewReviews,
   routeStopIndex,
   routeColor,
+  pinPalette,
+  isHighContrast = false,
 }) => {
   const [markerRef, marker] = useAdvancedMarkerRef();
   const isRouteStop = routeStopIndex !== undefined;
+
+  const pinBg = isRouteStop
+    ? isHighContrast
+      ? '#f97316'
+      : routeColor || '#2563eb'
+    : isSelected
+    ? pinPalette.selectedBg
+    : pinPalette.defaultBg;
+
+  const pinBorder = isSelected
+    ? pinPalette.selectedBorder
+    : isRouteStop
+    ? isHighContrast
+      ? '#000000'
+      : '#ffffff'
+    : pinPalette.defaultBorder;
+
+  const pinGlyph = isSelected
+    ? pinPalette.selectedGlyph
+    : isRouteStop
+    ? isHighContrast
+      ? '#000000'
+      : '#ffffff'
+    : pinPalette.defaultGlyph;
 
   return (
     <>
@@ -111,18 +141,20 @@ const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
         onClick={() => onSelect(place)}
       >
         <Pin
-          background={
-            isRouteStop
-              ? routeColor || '#2563eb'
-              : isSelected
-              ? '#1d4ed8'
-              : '#0f172a'
+          background={pinBg}
+          borderColor={pinBorder}
+          glyphColor={pinGlyph}
+          scale={
+            isSelected
+              ? pinPalette.selectedScale
+              : isRouteStop
+              ? isHighContrast
+                ? 1.32
+                : 1.2
+              : pinPalette.defaultScale
           }
-          borderColor={isSelected || isRouteStop ? '#ffffff' : '#475569'}
-          glyphColor={'#ffffff'}
-          scale={isSelected ? 1.25 : isRouteStop ? 1.2 : 1.05}
         >
-          <span className="font-mono text-[10px] font-semibold">
+          <span className="font-mono text-[10px] font-bold">
             {isRouteStop ? `S${routeStopIndex + 1}` : index + 1}
           </span>
         </Pin>
@@ -883,7 +915,7 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
             <div
               role="group"
               aria-label="Map style control menu"
-              className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg shrink-0"
+              className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg shrink-0 overflow-x-auto"
             >
               <span className="inline-flex items-center gap-1 px-1.5 text-[11px] font-medium text-slate-500 whitespace-nowrap">
                 <Layers className="w-3.5 h-3.5 text-slate-500" />
@@ -891,20 +923,27 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
               </span>
               {MAP_STYLE_OPTIONS.map((styleOpt) => {
                 const isActive = mapStyle === styleOpt.id;
+                const isHC = Boolean(styleOpt.isHighContrast);
                 return (
                   <button
                     key={styleOpt.id}
                     type="button"
+                    data-testid={`map-style-btn-${styleOpt.id}`}
                     onClick={() => setMapStyle(styleOpt.id)}
                     aria-pressed={isActive}
                     title={styleOpt.description}
-                    className={`px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                    className={`px-2 py-0.5 text-[11px] font-medium rounded-md transition-all whitespace-nowrap shrink-0 inline-flex items-center gap-1 ${
                       isActive
-                        ? 'bg-slate-900 text-white shadow-xs'
+                        ? isHC
+                          ? 'bg-amber-400 text-slate-950 font-bold ring-2 ring-slate-950 shadow-xs'
+                          : 'bg-slate-900 text-white shadow-xs'
+                        : isHC
+                        ? 'text-slate-900 bg-amber-100/80 hover:bg-amber-200 border border-amber-400/70 font-semibold'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    {styleOpt.label}
+                    {isHC && <Contrast className="w-3 h-3 shrink-0" />}
+                    <span>{styleOpt.label}</span>
                   </button>
                 );
               })}
@@ -914,39 +953,86 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
       </div>
 
       {/* Interactive Google Map Canvas (CF2: explicit height container) */}
-      <div className="relative flex-1 min-h-[280px] w-full" data-testid="google-map-canvas">
-        <Map
-          defaultCenter={activePreset.center}
-          defaultZoom={activePreset.zoom}
-          mapId="DEMO_MAP_ID"
-          mapTypeId={activeStyleConfig.mapTypeId}
-          mapTypeControl={false}
-          clickableIcons={mapStyle === 'standard'}
-          gestureHandling="greedy"
-          internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-          onCameraChanged={(ev: MapCameraChangedEvent) => {
-            onCameraChange(ev.detail.center, ev.detail.zoom);
-          }}
-          style={{ width: '100%', height: '100%' }}
+      <div
+        className={`relative flex-1 min-h-[280px] w-full ${
+          activeStyleConfig.isHighContrast ? 'ring-2 ring-inset ring-amber-400' : ''
+        }`}
+        data-testid="google-map-canvas"
+        data-map-style={activeStyleConfig.id}
+        data-high-contrast={activeStyleConfig.isHighContrast ? 'true' : 'false'}
+      >
+        <div
+          className="w-full h-full"
+          style={
+            activeStyleConfig.canvasFilter
+              ? { filter: activeStyleConfig.canvasFilter }
+              : undefined
+          }
         >
-          {allRenderedPlaces.map((place, index) => {
-            const stopIdx = routePlaceIndexMap[place.id];
-            return (
-              <PlaceMarkerItem
-                key={place.id}
-                place={place}
-                index={index}
-                isSelected={selectedPlace?.id === place.id}
-                onSelect={(p) => onSelectPlace(p)}
-                onCloseInfoWindow={() => onSelectPlace(null)}
-                onAskAboutPlace={onAskAboutPlace}
-                onViewReviews={onViewReviews}
-                routeStopIndex={stopIdx}
-                routeColor={routeColorHex}
-              />
-            );
-          })}
-        </Map>
+          <Map
+            defaultCenter={activePreset.center}
+            defaultZoom={activePreset.zoom}
+            mapId="DEMO_MAP_ID"
+            mapTypeId={activeStyleConfig.mapTypeId}
+            colorScheme={activeStyleConfig.colorScheme}
+            mapTypeControl={false}
+            clickableIcons={mapStyle === 'standard'}
+            gestureHandling="greedy"
+            internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+            onCameraChanged={(ev: MapCameraChangedEvent) => {
+              onCameraChange(ev.detail.center, ev.detail.zoom);
+            }}
+            style={{ width: '100%', height: '100%' }}
+          >
+            {allRenderedPlaces.map((place, index) => {
+              const stopIdx = routePlaceIndexMap[place.id];
+              return (
+                <PlaceMarkerItem
+                  key={place.id}
+                  place={place}
+                  index={index}
+                  isSelected={selectedPlace?.id === place.id}
+                  onSelect={(p) => onSelectPlace(p)}
+                  onCloseInfoWindow={() => onSelectPlace(null)}
+                  onAskAboutPlace={onAskAboutPlace}
+                  onViewReviews={onViewReviews}
+                  routeStopIndex={stopIdx}
+                  routeColor={routeColorHex}
+                  pinPalette={activeStyleConfig.pinPalette}
+                  isHighContrast={Boolean(activeStyleConfig.isHighContrast)}
+                />
+              );
+            })}
+          </Map>
+        </div>
+
+        {/* High-Contrast Accessibility Mode Active Indicator */}
+        {activeStyleConfig.isHighContrast && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="high-contrast-active-badge"
+            className="absolute bottom-3 left-3 z-20 bg-slate-950 text-amber-300 border-2 border-amber-400 rounded-xl shadow-xl px-3 py-2 flex items-center gap-2.5 text-xs font-semibold"
+          >
+            <Contrast className="w-4 h-4 text-amber-400 shrink-0" />
+            <div>
+              <div className="leading-tight">
+                High-Contrast Accessibility Mode
+              </div>
+              <div className="text-[10px] text-white font-normal">
+                WCAG AAA safety-yellow pins, dark canvas &amp; enhanced contrast
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMapStyle('standard')}
+              aria-label="Exit high-contrast map mode"
+              className="ml-1 px-2 py-0.5 text-[10px] font-bold bg-amber-400 text-slate-950 rounded hover:bg-amber-300 transition-colors"
+            >
+              Reset
+            </button>
+          </div>
+        )}
 
         {/* Floating Route Metrics HUD (Visible when 2+ stops are connected) */}
         {routeMetrics && (

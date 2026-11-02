@@ -26,14 +26,114 @@ export type GeminiModelId =
   | 'gemini-3.1-flash-lite'
   | 'gemini-flash-latest'
   | 'gemini-4-argon';
-export type MapStyleId = 'standard' | 'roadmap' | 'satellite' | 'hybrid';
+export type MapStyleId =
+  | 'standard'
+  | 'roadmap'
+  | 'satellite'
+  | 'hybrid'
+  | 'high-contrast';
+
+export interface MapPinPalette {
+  defaultBg: string;
+  defaultBorder: string;
+  defaultGlyph: string;
+  selectedBg: string;
+  selectedBorder: string;
+  selectedGlyph: string;
+  defaultScale: number;
+  selectedScale: number;
+}
 
 export interface MapStyleConfig {
   id: MapStyleId;
   label: string;
   mapTypeId: 'roadmap' | 'satellite' | 'hybrid' | 'terrain';
   description: string;
+  isHighContrast?: boolean;
+  colorScheme?: 'LIGHT' | 'DARK';
+  canvasFilter?: string;
+  pinPalette: MapPinPalette;
+  customMapStyles?: Array<{
+    featureType?: string;
+    elementType?: string;
+    stylers: Array<Record<string, string | number>>;
+  }>;
 }
+
+const STANDARD_PIN_PALETTE: MapPinPalette = {
+  defaultBg: '#0f172a',
+  defaultBorder: '#475569',
+  defaultGlyph: '#ffffff',
+  selectedBg: '#1d4ed8',
+  selectedBorder: '#ffffff',
+  selectedGlyph: '#ffffff',
+  defaultScale: 1.05,
+  selectedScale: 1.25,
+};
+
+const HIGH_CONTRAST_PIN_PALETTE: MapPinPalette = {
+  defaultBg: '#facc15', // WCAG AAA High-Visibility Safety Yellow
+  defaultBorder: '#000000',
+  defaultGlyph: '#000000',
+  selectedBg: '#22d3ee', // High-Luminance Electric Cyan
+  selectedBorder: '#000000',
+  selectedGlyph: '#000000',
+  defaultScale: 1.22,
+  selectedScale: 1.42,
+};
+
+export const HIGH_CONTRAST_MAP_STYLES: Array<{
+  featureType?: string;
+  elementType?: string;
+  stylers: Array<Record<string, string | number>>;
+}> = [
+  { elementType: 'geometry', stylers: [{ color: '#090d16' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#ffffff' }] },
+  {
+    elementType: 'labels.text.stroke',
+    stylers: [{ color: '#000000' }, { weight: 4 }],
+  },
+  {
+    featureType: 'road.highway',
+    elementType: 'geometry.fill',
+    stylers: [{ color: '#facc15' }],
+  },
+  {
+    featureType: 'road.highway',
+    elementType: 'geometry.stroke',
+    stylers: [{ color: '#000000' }, { weight: 2 }],
+  },
+  {
+    featureType: 'road.arterial',
+    elementType: 'geometry.fill',
+    stylers: [{ color: '#ffffff' }],
+  },
+  {
+    featureType: 'road.local',
+    elementType: 'geometry.fill',
+    stylers: [{ color: '#cbd5e1' }],
+  },
+  {
+    featureType: 'water',
+    elementType: 'geometry',
+    stylers: [{ color: '#022c43' }],
+  },
+  {
+    featureType: 'water',
+    elementType: 'labels.text.fill',
+    stylers: [{ color: '#38bdf8' }],
+  },
+  {
+    featureType: 'poi.park',
+    elementType: 'geometry',
+    stylers: [{ color: '#064e3b' }],
+  },
+  {
+    featureType: 'transit.station',
+    elementType: 'labels.text.fill',
+    stylers: [{ color: '#fde047' }],
+  },
+];
 
 export const MAP_STYLE_OPTIONS: MapStyleConfig[] = [
   {
@@ -41,24 +141,44 @@ export const MAP_STYLE_OPTIONS: MapStyleConfig[] = [
     label: 'Standard',
     mapTypeId: 'roadmap',
     description: 'Default vector map with full landmarks',
+    colorScheme: 'LIGHT',
+    pinPalette: STANDARD_PIN_PALETTE,
   },
   {
     id: 'roadmap',
     label: 'Roadmap',
     mapTypeId: 'roadmap',
     description: 'Street and transit corridor layout',
+    colorScheme: 'LIGHT',
+    pinPalette: STANDARD_PIN_PALETTE,
   },
   {
     id: 'satellite',
     label: 'Satellite',
     mapTypeId: 'satellite',
     description: 'High-resolution aerial imagery',
+    colorScheme: 'LIGHT',
+    pinPalette: STANDARD_PIN_PALETTE,
   },
   {
     id: 'hybrid',
     label: 'Hybrid',
     mapTypeId: 'hybrid',
     description: 'Satellite imagery with street and place labels',
+    colorScheme: 'LIGHT',
+    pinPalette: STANDARD_PIN_PALETTE,
+  },
+  {
+    id: 'high-contrast',
+    label: 'High Contrast',
+    mapTypeId: 'roadmap',
+    description:
+      'High-contrast accessibility mode (WCAG AAA enhanced labels, bold road outlines, and high-visibility yellow/black pins for low vision)',
+    isHighContrast: true,
+    colorScheme: 'DARK',
+    canvasFilter: 'contrast(1.38) saturate(1.25) brightness(1.05)',
+    pinPalette: HIGH_CONTRAST_PIN_PALETTE,
+    customMapStyles: HIGH_CONTRAST_MAP_STYLES,
   },
 ];
 
