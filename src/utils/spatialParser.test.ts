@@ -12,6 +12,8 @@ import {
   calculateMultiStopMetrics,
   CHATBOT_ROLES,
   getBotRoleById,
+  detectAndroidOrMobile,
+  resolveEffectiveDevicePlatform,
 } from './spatialParser';
 
 test('resolveMapStyleConfig resolves standard, roadmap, satellite, hybrid, and high-contrast styles', () => {
@@ -169,4 +171,21 @@ test('calculateMultiStopMetrics handles zero, single, and multiple coordinates',
   const drive = calculateMultiStopMetrics([ferryBuilding, unionSquare, coitTower], 'DRIVING');
   assert.ok(drive.totalDurationMinutes < walk.totalDurationMinutes);
 });
+
+test('detectAndroidOrMobile and resolveEffectiveDevicePlatform support PC and Android Browser versions', () => {
+  const desktopUA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+  const androidChromeUA =
+    'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36';
+
+  assert.equal(detectAndroidOrMobile(desktopUA, 1440), false);
+  assert.equal(detectAndroidOrMobile(androidChromeUA, 412), true);
+  assert.equal(detectAndroidOrMobile(desktopUA, 390), true);
+
+  assert.equal(resolveEffectiveDevicePlatform('auto', desktopUA, 1440), 'pc');
+  assert.equal(resolveEffectiveDevicePlatform('auto', androidChromeUA, 412), 'android');
+  assert.equal(resolveEffectiveDevicePlatform('android', desktopUA, 1440), 'android');
+  assert.equal(resolveEffectiveDevicePlatform('pc', androidChromeUA, 412), 'pc');
+});
+
 

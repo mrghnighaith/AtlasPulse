@@ -602,3 +602,35 @@ export function calculateMultiStopMetrics(
   };
 }
 
+export type DeviceViewMode = 'auto' | 'pc' | 'android';
+export type EffectiveDevicePlatform = 'pc' | 'android';
+export type MobileWorkspacePane = 'chat' | 'map';
+
+/**
+ * Detects whether the current environment is an Android browser or mobile viewport.
+ */
+export function detectAndroidOrMobile(
+  userAgent: string,
+  viewportWidth: number
+): boolean {
+  const ua = (userAgent || '').toLowerCase();
+  const isMobileUserAgent = /android|mobile|wv|silk|mobi|iphone|ipad/i.test(ua);
+  const isNarrowViewport = viewportWidth > 0 && viewportWidth < 768;
+  return isMobileUserAgent || isNarrowViewport;
+}
+
+/**
+ * Resolves the effective platform ('pc' or 'android') from the user-selected mode,
+ * browser user-agent string, and current viewport width.
+ */
+export function resolveEffectiveDevicePlatform(
+  mode: DeviceViewMode,
+  userAgent: string,
+  viewportWidth: number
+): EffectiveDevicePlatform {
+  if (mode === 'pc') return 'pc';
+  if (mode === 'android') return 'android';
+  return detectAndroidOrMobile(userAgent, viewportWidth) ? 'android' : 'pc';
+}
+
+
