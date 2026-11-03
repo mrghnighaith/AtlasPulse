@@ -33,12 +33,19 @@ import {
   GroundingMode,
   LatLngLiteral,
   MobileWorkspacePane,
+  ResolvedUserLocation,
+  UserLocationSource,
+  buildInitialGreetingMessage,
+  buildUserLocationPreset,
+  calculateHaversineDistanceKm,
+  extractExactStreetAddress,
+  extractLocalityFromFormattedAddress,
   formatCoordinate,
   resolveChatLayoutConfig,
   resolveEffectiveDevicePlatform,
+  resolveInitialUserLocationPreset,
 } from './utils/spatialParser';
 import {
-  CITY_VIEWPORT_PRESETS,
   CityViewportPreset,
   ChatMessage,
   LivePlaceItem,
@@ -60,11 +67,11 @@ import {
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
-function createInitialGreeting(cityName: string): ChatMessage {
+function createInitialGreeting(cityName?: string): ChatMessage {
   return {
     id: 'welcome-msg',
     role: 'model',
-    text: `Welcome to **AtlasPulse**. I am grounded in real-time **Google Maps** and **Google Search** data around **${cityName}**.\n\nSwitch between **8 specialized AI bots** above—including **Local Concierge**, **Culinary Scout**, **Urban Historian**, **Mobility & Access**, **Nightlife & Music**, **Nature & Trails**, **Remote Work Scout**, and **Family & Access**—to explore verified places and plot them directly on the map.`,
+    text: buildInitialGreetingMessage(cityName),
     timestamp: new Date().toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit',
@@ -121,20 +128,41 @@ export default function App() {
   );
   const isAndroidView = effectivePlatform === 'android';
 
+  const [userLocationPreset, setUserLocationPreset] =
+    useState<ResolvedUserLocation>(() => {
+      let cachedJson: string | null = null;
+      let timeZone = '';
+      try {
+        cachedJson = localStorage.getItem('atlaspulse_user_location');
+      } catch {
+        // Ignore storage errors
+      }
+      try {
+        timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+      } catch {
+        // Ignore timezone errors
+      }
+      return resolveInitialUserLocationPreset({ cachedJson, timeZone });
+    });
+
+  const [isLocatingUser, setIsLocatingUser] = useState(false);
+
   const [activePreset, setActivePreset] = useState<CityViewportPreset>(
-    CITY_VIEWPORT_PRESETS[0]
+    () => userLocationPreset
   );
   const [mapCenter, setMapCenter] = useState<LatLngLiteral>(
-    CITY_VIEWPORT_PRESETS[0].center
+    () => userLocationPreset.center
   );
-  const [mapZoom, setMapZoom] = useState<number>(CITY_VIEWPORT_PRESETS[0].zoom);
+  const [mapZoom, setMapZoom] = useState<number>(
+    () => userLocationPreset.zoom
+  );
 
   const [roleId, setRoleId] = useState<ChatbotRoleId>('concierge');
   const [model, setModel] = useState<GeminiModelId>('gemini-3.8-flash');
   const [groundingMode, setGroundingMode] = useState<GroundingMode>('auto');
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => [
-    createInitialGreeting(CITY_VIEWPORT_PRESETS[0].name),
+    createInitialGreeting(userLocationPreset.name),
   ]);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -148,7 +176,7 @@ export default function App() {
   } = useAuth();
 
   const [externalSearchQuery, setExternalSearchQuery] = useState<string>(
-    CITY_VIEWPORT_PRESETS[0].initialSearchQuery
+    () => userLocationPreset.initialSearchQuery
   );
   const [livePlaces, setLivePlaces] = useState<LivePlaceItem[]>([]);
   const [selectedPlace, setSelectedPlace] = useState<LivePlaceItem | null>(null);
@@ -158,6 +186,252 @@ export default function App() {
   const [gatedFeatureNotice, setGatedFeatureNotice] =
     useState<FeatureAccessCheckResult | null>(null);
   const [routePlaceIds, setRoutePlaceIds] = useState<string[]>([]);
+
+  const applyResolvedUserLocation = useCallback(
+    (
+      coords: LatLngLiteral,
+      options?: {
+        localityName?: string | null;
+        exactAddress?: string | null;
+        accuracyMeters?: number;
+        source?: UserLocationSource;
+      }
+    ) => {
+      const nextPreset = buildUserLocationPreset({
+        coords,
+        localityName: options?.localityName,
+        exactAddress: options?.exactAddress,
+        accuracyMeters: options?.accuracyMeters,
+        source: options?.source || 'gps',
+        zoom: 16,
+      });
+      setUserLocationPreset(nextPreset);
+      setActivePreset(nextPreset);
+      setMapCenter(nextPreset.center);
+      setMapZoom(nextPreset.zoom);
+      setExternalSearchQuery(nextPreset.initialSearchQuery);
+
+      try {
+        localStorage.setItem(
+          'atlaspulse_user_location',
+          JSON.stringify({
+            lat: nextPreset.center.lat,
+            lng: nextPreset.center.lng,
+            localityLabel: nextPreset.localityLabel,
+            exactAddress: nextPreset.exactAddress,
+            accuracyMeters: nextPreset.accuracyMeters,
+          })
+        );
+      } catch {
+        // Ignore storage errors
+      }
+
+      setMessages((prev) => {
+        if (prev.length === 1 && prev[0].id === 'welcome-msg') {
+          return [createInitialGreeting(nextPreset.name)];
+        }
+        return prev;
+      });
+
+      // Attempt exact street-level reverse geocoding via server proxy if exactAddress wasn't explicitly provided
+      if (!options?.exactAddress) {
+        void fetch(
+          `/api/reverse-geocode?lat=${nextPreset.center.lat}&lng=${nextPreset.center.lng}`
+        )
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (data?.exactAddress) {
+              const refined = buildUserLocationPreset({
+                coords: nextPreset.center,
+                localityName: data.localityLabel || nextPreset.localityLabel,
+                exactAddress: extractExactStreetAddress(data.exactAddress) || data.exactAddress,
+                accuracyMeters: nextPreset.accuracyMeters,
+                source: nextPreset.source,
+                zoom: 16,
+              });
+              setUserLocationPreset(refined);
+              setActivePreset((curr) =>
+                curr.id === 'user-location' ? refined : curr
+              );
+              setMessages((prev) => {
+                if (prev.length === 1 && prev[0].id === 'welcome-msg') {
+                  return [createInitialGreeting(refined.name)];
+                }
+                return prev;
+              });
+              try {
+                localStorage.setItem(
+                  'atlaspulse_user_location',
+                  JSON.stringify({
+                    lat: refined.center.lat,
+                    lng: refined.center.lng,
+                    localityLabel: refined.localityLabel,
+                    exactAddress: refined.exactAddress,
+                    accuracyMeters: refined.accuracyMeters,
+                  })
+                );
+              } catch {
+                // Ignore storage errors
+              }
+            }
+          })
+          .catch(() => {
+            // Closest live place address will refine exactAddress automatically
+          });
+      }
+    },
+    []
+  );
+
+  const handleRequestUserLocation = useCallback(() => {
+    setActivePreset(userLocationPreset);
+    setMapCenter(userLocationPreset.center);
+    setMapZoom(userLocationPreset.zoom);
+    setExternalSearchQuery(userLocationPreset.initialSearchQuery);
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      return;
+    }
+
+    setIsLocatingUser(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setIsLocatingUser(false);
+        applyResolvedUserLocation(
+          {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          },
+          {
+            accuracyMeters: pos.coords.accuracy,
+            source: 'gps',
+          }
+        );
+      },
+      () => {
+        setIsLocatingUser(false);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 0,
+      }
+    );
+  }, [userLocationPreset, applyResolvedUserLocation]);
+
+  // Automatically request and watch the user's exact high-accuracy browser GPS location on startup
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      return;
+    }
+    setIsLocatingUser(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setIsLocatingUser(false);
+        applyResolvedUserLocation(
+          {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          },
+          {
+            accuracyMeters: pos.coords.accuracy,
+            source: 'gps',
+          }
+        );
+      },
+      () => {
+        setIsLocatingUser(false);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 0,
+      }
+    );
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setIsLocatingUser(false);
+        setUserLocationPreset((prev) => {
+          const movedKm = calculateHaversineDistanceKm(prev.center, {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          });
+          // Update if source wasn't GPS yet or user moved > 15 meters
+          if (prev.source !== 'gps' || movedKm > 0.015) {
+            applyResolvedUserLocation(
+              {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+              },
+              {
+                accuracyMeters: pos.coords.accuracy,
+                source: 'gps',
+              }
+            );
+          }
+          return prev;
+        });
+      },
+      () => {
+        // Ignore watch errors
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [applyResolvedUserLocation]);
+
+  // Refine exact street address and locality from the closest live Google Place when centered on user-location
+  useEffect(() => {
+    if (activePreset.id !== 'user-location' || livePlaces.length === 0) {
+      return;
+    }
+    const sortedByDist = [...livePlaces].sort(
+      (a, b) =>
+        calculateHaversineDistanceKm(userLocationPreset.center, a.location) -
+        calculateHaversineDistanceKm(userLocationPreset.center, b.location)
+    );
+    const closestPlace = sortedByDist[0];
+    const rawAddress = closestPlace?.formattedAddress;
+    if (!rawAddress) return;
+
+    const extractedLocality = extractLocalityFromFormattedAddress(rawAddress);
+    const extractedStreet = extractExactStreetAddress(rawAddress);
+
+    const needsAddressUpdate =
+      !userLocationPreset.exactAddress && Boolean(extractedStreet);
+    const needsLocalityUpdate =
+      Boolean(extractedLocality) &&
+      extractedLocality !== userLocationPreset.localityLabel &&
+      userLocationPreset.localityLabel.includes('°');
+
+    if (needsAddressUpdate || needsLocalityUpdate) {
+      const updated = buildUserLocationPreset({
+        coords: userLocationPreset.center,
+        localityName: extractedLocality || userLocationPreset.localityLabel,
+        exactAddress:
+          userLocationPreset.exactAddress || extractedStreet || undefined,
+        accuracyMeters: userLocationPreset.accuracyMeters,
+        source: userLocationPreset.source,
+        zoom: userLocationPreset.zoom,
+      });
+      setUserLocationPreset(updated);
+      setActivePreset(updated);
+      setMessages((prev) => {
+        if (prev.length === 1 && prev[0].id === 'welcome-msg') {
+          return [createInitialGreeting(updated.name)];
+        }
+        return prev;
+      });
+    }
+  }, [activePreset.id, livePlaces, userLocationPreset]);
   const [savedPlaces, setSavedPlaces] = useState<LivePlaceItem[]>(() => {
     try {
       const raw = localStorage.getItem('atlaspulse_saved_places');
@@ -847,6 +1121,21 @@ export default function App() {
                   >
                     <InteractiveMapPanel
                       activePreset={activePreset}
+                      userLocationPreset={userLocationPreset}
+                      isLocatingUser={isLocatingUser}
+                      onRequestUserLocation={handleRequestUserLocation}
+                      onPinpointExactLocation={(
+                        coords,
+                        exactAddress,
+                        localityName
+                      ) => {
+                        applyResolvedUserLocation(coords, {
+                          exactAddress,
+                          localityName,
+                          accuracyMeters: 1,
+                          source: 'pinpoint',
+                        });
+                      }}
                       onSelectPreset={(preset) => {
                         setActivePreset(preset);
                         setMapCenter(preset.center);

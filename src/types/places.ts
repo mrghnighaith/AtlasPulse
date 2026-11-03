@@ -4,6 +4,7 @@ import {
   GroundedSource,
   GroundingMode,
   LatLngLiteral,
+  UserLocationSource,
 } from '../utils/spatialParser';
 
 export interface LivePlaceItem {
@@ -40,6 +41,11 @@ export interface CityViewportPreset {
   center: LatLngLiteral;
   zoom: number;
   initialSearchQuery: string;
+  source?: UserLocationSource;
+  localityLabel?: string;
+  exactAddress?: string;
+  accuracyMeters?: number;
+  isUserLocation?: boolean;
 }
 
 export const CITY_VIEWPORT_PRESETS: CityViewportPreset[] = [

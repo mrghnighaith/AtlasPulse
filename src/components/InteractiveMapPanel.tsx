@@ -33,15 +33,21 @@ import {
   AlertCircle,
   Contrast,
   Lock,
+  Crosshair,
+  Copy,
 } from 'lucide-react';
 import {
   calculateHaversineDistanceKm,
   calculateMultiStopMetrics,
+  extractExactStreetAddress,
+  extractLocalityFromFormattedAddress,
   formatCoordinate,
+  formatExactCoordinate,
   LatLngLiteral,
   MAP_STYLE_OPTIONS,
   MapPinPalette,
   MapStyleId,
+  parseCoordinateInput,
   resolveMapStyleConfig,
   ROUTE_COLOR_PRESETS,
   TravelMode,
@@ -55,6 +61,14 @@ import {
 
 interface InteractiveMapPanelProps {
   activePreset: CityViewportPreset;
+  userLocationPreset?: CityViewportPreset;
+  isLocatingUser?: boolean;
+  onRequestUserLocation?: () => void;
+  onPinpointExactLocation?: (
+    coords: LatLngLiteral,
+    exactAddress?: string | null,
+    localityName?: string | null
+  ) => void;
   onSelectPreset: (preset: CityViewportPreset) => void;
   mapCenter: LatLngLiteral;
   mapZoom: number;
@@ -238,6 +252,10 @@ const PlaceMarkerItem: React.FC<PlaceMarkerItemProps> = ({
 
 export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
   activePreset,
+  userLocationPreset,
+  isLocatingUser = false,
+  onRequestUserLocation,
+  onPinpointExactLocation,
   onSelectPreset,
   mapCenter,
   mapZoom,
@@ -259,9 +277,14 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
   const map = useMap();
   const placesLib = useMapsLibrary('places');
   const routesLib = useMapsLibrary('routes');
+  const [userMarkerRef, userMarker] = useAdvancedMarkerRef();
 
   const [mapStyle, setMapStyle] = useState<MapStyleId>('standard');
   const activeStyleConfig = resolveMapStyleConfig(mapStyle);
+
+  const [isPinpointMode, setIsPinpointMode] = useState(false);
+  const [isUserMarkerInfoOpen, setIsUserMarkerInfoOpen] = useState(false);
+  const [copiedExactCoords, setCopiedExactCoords] = useState(false);
 
   const [searchInput, setSearchInput] = useState('');
   const [suggestions, setSuggestions] = useState<
@@ -493,7 +516,11 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
 
   // Execute live Google Maps Places API (New) `Place.searchByText`
   const executeTextSearch = useCallback(
-    async (queryText: string, targetCenter: LatLngLiteral) => {
+    async (
+      queryText: string,
+      targetCenter: LatLngLiteral,
+      options?: { panToFirstResult?: boolean }
+    ) => {
       if (!placesLib || !queryText.trim()) return;
 
       setIsSearchingPlaces(true);
@@ -516,7 +543,7 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
           ],
           locationBias: {
             center: targetCenter,
-            radius: 3500,
+            radius: 2500,
           },
           maxResultCount: 8,
         };
@@ -557,8 +584,19 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
           });
         }
 
+        // Sort places by exact distance from the target center (closest to user's exact location first)
+        mapped.sort(
+          (a, b) => (a.distanceKm ?? 999) - (b.distanceKm ?? 999)
+        );
+
         onUpdateLivePlaces(mapped);
-        if (mapped.length > 0 && map && selectedRouteIds.length < 2) {
+        // Only pan to the first search result if explicitly requested (never pan away from the user's exact location on initial/auto search)
+        if (
+          options?.panToFirstResult &&
+          mapped.length > 0 &&
+          map &&
+          selectedRouteIds.length < 2
+        ) {
           map.panTo(mapped[0].location);
         }
       } catch (err: any) {
@@ -579,15 +617,26 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
     [placesLib, map, onUpdateLivePlaces, selectedRouteIds.length]
   );
 
-  // Trigger initial or external search query when placesLib is ready
+  // Keep map centered on user's exact location when user location coordinates resolve while activePreset is 'user-location'
+  useEffect(() => {
+    if (!map || activePreset.id !== 'user-location') return;
+    map.panTo(activePreset.center);
+    map.setZoom(activePreset.zoom || 16);
+  }, [map, activePreset.id, activePreset.center, activePreset.zoom]);
+
+  // Trigger initial or external search query when placesLib is ready or when user location updates
   useEffect(() => {
     if (!placesLib) return;
     const queryToRun = externalSearchQuery || activePreset.initialSearchQuery;
-    if (queryToRun && queryToRun !== lastExecutedQueryRef.current) {
-      lastExecutedQueryRef.current = queryToRun;
-      void executeTextSearch(queryToRun, mapCenter);
+    const searchSignature = `${queryToRun}::${activePreset.center.lat.toFixed(4)},${activePreset.center.lng.toFixed(4)}`;
+    if (queryToRun && searchSignature !== lastExecutedQueryRef.current) {
+      lastExecutedQueryRef.current = searchSignature;
+      const shouldPan = activePreset.id !== 'user-location';
+      void executeTextSearch(queryToRun, activePreset.center, {
+        panToFirstResult: shouldPan,
+      });
     }
-  }, [placesLib, externalSearchQuery, activePreset, mapCenter, executeTextSearch]);
+  }, [placesLib, externalSearchQuery, activePreset, executeTextSearch]);
 
   // Autocomplete suggestions via AutocompleteSuggestion.fetchAutocompleteSuggestions
   useEffect(() => {
@@ -628,7 +677,8 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
   }, [placesLib, searchInput, mapCenter]);
 
   const handleSelectSuggestion = async (
-    suggestion: google.maps.places.AutocompleteSuggestion
+    suggestion: google.maps.places.AutocompleteSuggestion,
+    setAsExactUserLocation = false
   ) => {
     if (!placesLib || !suggestion.placePrediction) return;
     try {
@@ -658,10 +708,24 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
           typeof place.location.lng === 'function'
             ? place.location.lng()
             : Number((place.location as any).lng);
+        const rawAddr = place.formattedAddress || place.displayName || '';
+
+        if (setAsExactUserLocation || isPinpointMode) {
+          setIsPinpointMode(false);
+          const streetAddr = extractExactStreetAddress(rawAddr) || rawAddr;
+          const locality = extractLocalityFromFormattedAddress(rawAddr);
+          onPinpointExactLocation?.({ lat, lng }, streetAddr, locality);
+          onCameraChange({ lat, lng }, 17);
+          map?.panTo({ lat, lng });
+          map?.setZoom(17);
+          setIsUserMarkerInfoOpen(true);
+          return;
+        }
+
         const item: LivePlaceItem = {
           id: place.id || `${lat}-${lng}`,
           displayName: place.displayName || 'Selected Place',
-          formattedAddress: place.formattedAddress || '',
+          formattedAddress: rawAddr,
           location: { lat, lng },
           rating: place.rating ?? undefined,
           userRatingCount: place.userRatingCount ?? undefined,
@@ -691,13 +755,38 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
 
   const handleSearchFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchInput.trim()) return;
+    const raw = searchInput.trim();
+    if (!raw) return;
     setSuggestions([]);
-    lastExecutedQueryRef.current = searchInput.trim();
-    void executeTextSearch(searchInput.trim(), mapCenter);
+
+    // Check if the user entered exact GPS coordinates (e.g. "47.606200, -122.332100")
+    const parsedCoords = parseCoordinateInput(raw);
+    if (parsedCoords && onPinpointExactLocation) {
+      setSearchInput('');
+      setIsPinpointMode(false);
+      onPinpointExactLocation(parsedCoords, null, null);
+      onCameraChange(parsedCoords, 17);
+      map?.panTo(parsedCoords);
+      map?.setZoom(17);
+      setIsUserMarkerInfoOpen(true);
+      return;
+    }
+
+    lastExecutedQueryRef.current = `${raw}::${mapCenter.lat.toFixed(4)},${mapCenter.lng.toFixed(4)}`;
+    void executeTextSearch(raw, mapCenter, { panToFirstResult: true });
   };
 
   const handleUseMyLocation = () => {
+    if (userLocationPreset) {
+      onSelectPreset(userLocationPreset);
+      onCameraChange(userLocationPreset.center, 16);
+      map?.panTo(userLocationPreset.center);
+      map?.setZoom(16);
+      setIsUserMarkerInfoOpen(true);
+    }
+    if (onRequestUserLocation) {
+      onRequestUserLocation();
+    }
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -705,12 +794,25 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
         };
-        onCameraChange(nextCenter, 15);
+        onCameraChange(nextCenter, 16);
         map?.panTo(nextCenter);
-        void executeTextSearch('restaurants and coffee nearby', nextCenter);
+        map?.setZoom(16);
+        void executeTextSearch(
+          'specialty coffee, top rated restaurants and landmarks nearby',
+          nextCenter,
+          { panToFirstResult: false }
+        );
       },
       () => {
-        setPlacesStatusMsg('Browser geolocation permission was not granted.');
+        if (userLocationPreset) {
+          map?.panTo(userLocationPreset.center);
+          map?.setZoom(16);
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 0,
       }
     );
   };
@@ -787,22 +889,48 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
     >
       {/* Map Toolbar: City Presets + Search + Style & Route Planner */}
       <div className="p-3 bg-white border-b border-slate-200 space-y-2.5 shrink-0">
-        {/* City Preset Switcher & Geolocation */}
+        {/* City Preset Switcher & Default User Location */}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div
             role="group"
             aria-label="City viewport presets"
             className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg overflow-x-auto"
           >
+            {userLocationPreset && (
+              <button
+                type="button"
+                data-testid="my-location-preset-btn"
+                aria-pressed={activePreset.id === 'user-location'}
+                onClick={handleUseMyLocation}
+                title={`Default User Location: ${userLocationPreset.name}`}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
+                  activePreset.id === 'user-location'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-blue-700 hover:bg-blue-50/80'
+                }`}
+              >
+                <Navigation className="w-3 h-3 shrink-0" />
+                <span>
+                  My Location
+                  {userLocationPreset.localityLabel
+                    ? ` · ${userLocationPreset.localityLabel.split(',')[0]}`
+                    : ''}
+                </span>
+              </button>
+            )}
+
             {CITY_VIEWPORT_PRESETS.map((preset) => (
               <button
                 key={preset.id}
                 type="button"
+                data-testid={`city-preset-btn-${preset.id}`}
+                aria-pressed={activePreset.id === preset.id}
                 onClick={() => {
                   onSelectPreset(preset);
                   map?.panTo(preset.center);
                   map?.setZoom(preset.zoom);
-                  lastExecutedQueryRef.current = preset.initialSearchQuery;
+                  const sig = `${preset.initialSearchQuery}::${preset.center.lat.toFixed(3)},${preset.center.lng.toFixed(3)}`;
+                  lastExecutedQueryRef.current = sig;
                   void executeTextSearch(preset.initialSearchQuery, preset.center);
                 }}
                 className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
@@ -818,28 +946,155 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
 
           <button
             type="button"
+            data-testid="locate-me-btn"
             onClick={handleUseMyLocation}
-            className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-md hover:bg-slate-100 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            title="Refresh live GPS coordinates and center map on your location"
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 border ${
+              activePreset.id === 'user-location'
+                ? 'bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100'
+                : 'text-slate-700 bg-slate-50 border-slate-200 hover:bg-slate-100'
+            }`}
           >
-            <Navigation className="w-3.5 h-3.5 text-blue-600" />
-            <span>My Location</span>
+            <Navigation
+              className={`w-3.5 h-3.5 text-blue-600 ${
+                isLocatingUser ? 'animate-spin' : ''
+              }`}
+            />
+            <span>{isLocatingUser ? 'Locating...' : 'Refresh GPS'}</span>
           </button>
         </div>
 
-        {/* Live Google Places Autocomplete & Text Search Bar */}
+        {/* Exact User Location Readout & Pinpoint Control Bar */}
+        {userLocationPreset && (
+          <div
+            data-testid="exact-location-bar"
+            className={`px-2.5 py-1.5 rounded-lg border text-xs flex flex-wrap items-center justify-between gap-2 transition-colors ${
+              isPinpointMode
+                ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                : activePreset.id === 'user-location'
+                ? 'bg-blue-50/90 text-slate-900 border-blue-200'
+                : 'bg-slate-50 text-slate-700 border-slate-200'
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <span
+                className={`w-2 h-2 rounded-full shrink-0 ${
+                  isPinpointMode
+                    ? 'bg-amber-300 animate-ping'
+                    : 'bg-blue-600'
+                }`}
+              />
+              <div className="min-w-0 flex-1">
+                {isPinpointMode ? (
+                  <div className="font-semibold text-[11px] truncate">
+                    Click any exact building or street on the map (or search an address below) to lock your Exact Location
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span className="font-semibold text-[11px] text-blue-950 truncate max-w-[280px] sm:max-w-[360px]">
+                      Exact Location:{' '}
+                      {userLocationPreset.exactAddress ||
+                        userLocationPreset.localityLabel}
+                    </span>
+                    <span
+                      data-testid="exact-location-coords"
+                      className="font-mono text-[10px] text-blue-700 bg-white/90 border border-blue-200/80 px-1.5 py-0.5 rounded tabular-nums shrink-0"
+                    >
+                      {formatExactCoordinate(
+                        userLocationPreset.center.lat,
+                        userLocationPreset.center.lng
+                      )}
+                    </span>
+                    {userLocationPreset.accuracyMeters !== undefined && (
+                      <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded shrink-0">
+                        {userLocationPreset.source === 'pinpoint'
+                          ? 'Exact Pinpoint (1m)'
+                          : `GPS ±${userLocationPreset.accuracyMeters}m`}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              {!isPinpointMode && (
+                <>
+                  <button
+                    type="button"
+                    data-testid="center-exact-pin-btn"
+                    onClick={() => {
+                      onSelectPreset(userLocationPreset);
+                      onCameraChange(userLocationPreset.center, 17);
+                      map?.panTo(userLocationPreset.center);
+                      map?.setZoom(17);
+                      setIsUserMarkerInfoOpen(true);
+                    }}
+                    title="Zoom to street-level exact pin (Zoom 17)"
+                    className="px-2 py-1 text-[10px] font-semibold text-blue-800 bg-white hover:bg-blue-100 border border-blue-200 rounded transition-colors"
+                  >
+                    Zoom Exact Pin
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="copy-exact-coords-btn"
+                    onClick={() => {
+                      const rawCoords = `${userLocationPreset.center.lat.toFixed(6)}, ${userLocationPreset.center.lng.toFixed(6)}`;
+                      void navigator.clipboard?.writeText(rawCoords);
+                      setCopiedExactCoords(true);
+                      setTimeout(() => setCopiedExactCoords(false), 1800);
+                    }}
+                    title="Copy exact 6-decimal GPS coordinates"
+                    className="px-2 py-1 text-[10px] font-medium text-slate-700 bg-white hover:bg-slate-100 border border-slate-200 rounded inline-flex items-center gap-1 transition-colors"
+                  >
+                    <Copy className="w-2.5 h-2.5 text-slate-500" />
+                    <span>{copiedExactCoords ? 'Copied' : 'Copy Coords'}</span>
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                data-testid="pinpoint-exact-location-btn"
+                aria-pressed={isPinpointMode}
+                onClick={() => setIsPinpointMode((prev) => !prev)}
+                title="Click anywhere on the map to set your exact street/building location"
+                className={`px-2 py-1 text-[10px] font-semibold rounded inline-flex items-center gap-1 transition-colors ${
+                  isPinpointMode
+                    ? 'bg-amber-400 text-slate-950 hover:bg-amber-300'
+                    : 'bg-slate-900 text-white hover:bg-slate-800'
+                }`}
+              >
+                <Crosshair className="w-3 h-3 shrink-0" />
+                <span>
+                  {isPinpointMode ? 'Cancel Pinpoint' : 'Pinpoint Exact Spot'}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Live Google Places Autocomplete & Exact Coordinate Search Bar */}
         <div className="relative">
           <form onSubmit={handleSearchFormSubmit} className="flex items-center gap-2">
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <label htmlFor="places-live-search" className="sr-only">
-                Search live Google Maps places
+                Search live Google Maps places or enter exact GPS coordinates
               </label>
               <input
                 id="places-live-search"
                 type="text"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
-                placeholder={`Search live places in ${activePreset.name}...`}
+                placeholder={
+                  isPinpointMode
+                    ? 'Type an exact street address or GPS coordinates (e.g. 47.606200, -122.332100)...'
+                    : `Search places or enter exact coords in ${
+                        userLocationPreset && activePreset.id === 'user-location'
+                          ? userLocationPreset.exactAddress || userLocationPreset.localityLabel
+                          : activePreset.name
+                      }...`
+                }
                 className="w-full pl-9 pr-3 py-1.5 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-md focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
               />
             </div>
@@ -860,16 +1115,29 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
               className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-30 divide-y divide-slate-100 max-h-56 overflow-y-auto"
             >
               {suggestions.map((s, idx) => (
-                <li key={idx}>
+                <li
+                  key={idx}
+                  className="flex items-center justify-between gap-2 px-2 py-1 hover:bg-blue-50/70"
+                >
                   <button
                     type="button"
-                    onClick={() => handleSelectSuggestion(s)}
-                    className="w-full text-left px-3 py-2 text-xs text-slate-800 hover:bg-blue-50 flex items-center gap-2"
+                    onClick={() => handleSelectSuggestion(s, false)}
+                    className="flex-1 text-left px-1.5 py-1 text-xs text-slate-800 flex items-center gap-2 min-w-0"
                   >
                     <MapPin className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                     <span className="truncate">
                       {s.placePrediction?.text?.text}
                     </span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid={`set-exact-address-btn-${idx}`}
+                    onClick={() => handleSelectSuggestion(s, true)}
+                    className="px-2 py-1 text-[10px] font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded whitespace-nowrap shrink-0 inline-flex items-center gap-1"
+                    title="Set this address as your Exact Location"
+                  >
+                    <Crosshair className="w-2.5 h-2.5" />
+                    <span>Set Exact Location</span>
                   </button>
                 </li>
               ))}
@@ -1002,14 +1270,116 @@ export const InteractiveMapPanel: React.FC<InteractiveMapPanelProps> = ({
             mapTypeId={activeStyleConfig.mapTypeId}
             colorScheme={activeStyleConfig.colorScheme}
             mapTypeControl={false}
-            clickableIcons={mapStyle === 'standard'}
+            clickableIcons={mapStyle === 'standard' && !isPinpointMode}
             gestureHandling="greedy"
             internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
             onCameraChanged={(ev: MapCameraChangedEvent) => {
               onCameraChange(ev.detail.center, ev.detail.zoom);
             }}
+            onClick={(ev: any) => {
+              if (!isPinpointMode || !onPinpointExactLocation) return;
+              const clickedLatLng = ev?.detail?.latLng;
+              if (
+                clickedLatLng &&
+                typeof clickedLatLng.lat === 'number' &&
+                typeof clickedLatLng.lng === 'number'
+              ) {
+                const exactCoords = {
+                  lat: Number(clickedLatLng.lat.toFixed(6)),
+                  lng: Number(clickedLatLng.lng.toFixed(6)),
+                };
+                setIsPinpointMode(false);
+                onPinpointExactLocation(exactCoords, null, null);
+                onCameraChange(exactCoords, 17);
+                map?.panTo(exactCoords);
+                map?.setZoom(17);
+                setIsUserMarkerInfoOpen(true);
+              }
+            }}
             style={{ width: '100%', height: '100%' }}
           >
+            {/* User's Exact Location Marker ("You Are Here") & Exact Address InfoWindow */}
+            {userLocationPreset && (
+              <>
+                <AdvancedMarker
+                  ref={userMarkerRef}
+                  position={userLocationPreset.center}
+                  title={`Your Exact Location: ${
+                    userLocationPreset.exactAddress || userLocationPreset.name
+                  } (${formatExactCoordinate(
+                    userLocationPreset.center.lat,
+                    userLocationPreset.center.lng
+                  )})`}
+                  onClick={() =>
+                    setIsUserMarkerInfoOpen((prev) => !prev)
+                  }
+                >
+                  <div
+                    data-testid="user-location-marker"
+                    className="relative flex flex-col items-center cursor-pointer group"
+                  >
+                    <div className="mb-1 px-2 py-0.5 rounded-full bg-blue-600 text-white text-[10px] font-bold shadow-md border border-white whitespace-nowrap flex items-center gap-1">
+                      <Crosshair className="w-2.5 h-2.5" />
+                      <span>Exact Location</span>
+                    </div>
+                    <div className="relative flex items-center justify-center">
+                      <span className="absolute w-8 h-8 rounded-full bg-blue-500/35 animate-ping" />
+                      <span className="relative w-4 h-4 rounded-full bg-blue-600 border-2 border-white shadow-md flex items-center justify-center">
+                        <span className="w-1.5 h-1.5 rounded-full bg-white" />
+                      </span>
+                    </div>
+                  </div>
+                </AdvancedMarker>
+
+                {isUserMarkerInfoOpen && userMarker && (
+                  <InfoWindow
+                    anchor={userMarker}
+                    maxWidth={300}
+                    onCloseClick={() => setIsUserMarkerInfoOpen(false)}
+                  >
+                    <div
+                      data-testid="exact-location-infowindow"
+                      className="p-1 text-slate-900 space-y-1.5"
+                    >
+                      <div className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold text-blue-800 bg-blue-50 border border-blue-200 rounded">
+                        <Crosshair className="w-3 h-3 text-blue-600" />
+                        <span>Your Exact Location</span>
+                      </div>
+                      <div className="font-display font-bold text-xs text-slate-950">
+                        {userLocationPreset.exactAddress ||
+                          userLocationPreset.localityLabel}
+                      </div>
+                      <div className="font-mono text-[11px] text-blue-700 bg-slate-50 border border-slate-200 px-2 py-1 rounded tabular-nums">
+                        {formatExactCoordinate(
+                          userLocationPreset.center.lat,
+                          userLocationPreset.center.lng
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUserMarkerInfoOpen(false);
+                            setIsPinpointMode(true);
+                          }}
+                          className="px-2 py-1 text-[10px] font-semibold text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
+                        >
+                          Adjust Exact Pin
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleUseMyLocation}
+                          className="px-2 py-1 text-[10px] font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded transition-colors"
+                        >
+                          Refresh GPS
+                        </button>
+                      </div>
+                    </div>
+                  </InfoWindow>
+                )}
+              </>
+            )}
+
             {allRenderedPlaces.map((place, index) => {
               const stopIdx = routePlaceIndexMap[place.id];
               return (

@@ -18,6 +18,14 @@ import {
   isQuotaOrRateLimitError,
   buildQuotaFallbackReply,
   resolveChatLayoutConfig,
+  findNearestKnownLocality,
+  extractLocalityFromFormattedAddress,
+  buildUserLocationPreset,
+  resolveInitialUserLocationPreset,
+  formatExactCoordinate,
+  parseCoordinateInput,
+  extractExactStreetAddress,
+  buildInitialGreetingMessage,
 } from './spatialParser';
 
 test('resolveMapStyleConfig resolves standard, roadmap, satellite, hybrid, and high-contrast styles', () => {
@@ -248,3 +256,105 @@ test('resolveChatLayoutConfig resolves split, wide, and fullscreen AI chat layou
   assert.ok(fullscreen.chatColSpanClass.includes('lg:col-span-12'));
   assert.equal(fullscreen.showMapInWorkspace, false);
 });
+
+test('user location default helpers resolve exact coordinates, street addresses, and initial preset', () => {
+  assert.equal(
+    formatExactCoordinate(37.7955, -122.3937),
+    '37.795500°N, 122.393700°W'
+  );
+  assert.deepEqual(parseCoordinateInput('47.606200, -122.332100'), {
+    lat: 47.6062,
+    lng: -122.3321,
+  });
+  assert.equal(parseCoordinateInput('invalid coords'), null);
+  assert.equal(parseCoordinateInput('99.5, -122.3'), null);
+
+  assert.equal(
+    extractExactStreetAddress('1 Ferry Building, San Francisco, CA 94111, USA'),
+    '1 Ferry Building, San Francisco, CA 94111'
+  );
+
+  assert.equal(
+    findNearestKnownLocality({ lat: 37.789, lng: -122.401 }),
+    'San Francisco, CA'
+  );
+  assert.equal(
+    findNearestKnownLocality({ lat: 40.758, lng: -73.9855 }),
+    'New York, NY'
+  );
+  assert.equal(
+    findNearestKnownLocality({ lat: 0, lng: 0 }),
+    '0.0000°N, 0.0000°E'
+  );
+
+  assert.equal(
+    extractLocalityFromFormattedAddress('1 Ferry Building, San Francisco, CA 94111, USA'),
+    'San Francisco, CA'
+  );
+  assert.equal(
+    extractLocalityFromFormattedAddress('230 W 4th St, New York, NY 10014, USA'),
+    'New York, NY'
+  );
+
+  const gpsPreset = buildUserLocationPreset({
+    coords: { lat: 47.6062, lng: -122.3321 },
+    exactAddress: '85 Pike St, Seattle, WA 98101',
+    accuracyMeters: 8.4,
+    source: 'gps',
+  });
+  assert.equal(gpsPreset.id, 'user-location');
+  assert.equal(gpsPreset.isUserLocation, true);
+  assert.equal(gpsPreset.zoom, 16);
+  assert.equal(gpsPreset.localityLabel, 'Seattle, WA');
+  assert.equal(gpsPreset.exactAddress, '85 Pike St, Seattle, WA 98101');
+  assert.equal(gpsPreset.accuracyMeters, 8);
+  assert.equal(gpsPreset.name, 'My Location (85 Pike St, Seattle, WA 98101)');
+
+  const tzPreset = resolveInitialUserLocationPreset({
+    timeZone: 'America/New_York',
+  });
+  assert.equal(tzPreset.id, 'user-location');
+  assert.equal(tzPreset.source, 'timezone');
+  assert.equal(tzPreset.localityLabel, 'New York, NY');
+  assert.ok(tzPreset.exactAddress?.includes('Washington Square Park'));
+
+  const cachedPreset = resolveInitialUserLocationPreset({
+    cachedJson: JSON.stringify({
+      lat: 30.2672,
+      lng: -97.7431,
+      localityLabel: 'Austin, TX',
+      exactAddress: '1100 Congress Ave, Austin, TX 78701',
+      accuracyMeters: 12,
+    }),
+    timeZone: 'America/New_York',
+  });
+  assert.equal(cachedPreset.id, 'user-location');
+  assert.equal(cachedPreset.source, 'cached');
+  assert.equal(cachedPreset.localityLabel, 'Austin, TX');
+  assert.equal(cachedPreset.exactAddress, '1100 Congress Ave, Austin, TX 78701');
+  assert.equal(cachedPreset.accuracyMeters, 12);
+});
+
+test('buildInitialGreetingMessage welcomes user with worldwide real-time data coverage', () => {
+  const greeting = buildInitialGreetingMessage();
+  assert.ok(
+    greeting.includes(
+      'Welcome to **AtlasPulse**. I am grounded in real-time **Google Maps** and **Google Search** data all over the world.'
+    )
+  );
+  assert.ok(!greeting.includes('around San Francisco, CA'));
+  assert.ok(!greeting.includes('around **San Francisco, CA**'));
+  assert.ok(greeting.includes('8 specialized AI bots'));
+  assert.ok(greeting.includes('Local Concierge'));
+
+  // Should also be worldwide when passing any city name or preset
+  const sfGreeting = buildInitialGreetingMessage('San Francisco, CA');
+  assert.ok(
+    sfGreeting.includes(
+      'Welcome to **AtlasPulse**. I am grounded in real-time **Google Maps** and **Google Search** data all over the world.'
+    )
+  );
+  assert.ok(!sfGreeting.includes('around **San Francisco, CA**'));
+});
+
+

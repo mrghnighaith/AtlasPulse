@@ -521,11 +521,11 @@ export function buildSystemInstruction(
   const baseRole = rolePrompts[roleId] || rolePrompts.concierge;
 
   return `${baseRole}
-Current Map Focus: ${activeCityName} (Coordinates: ${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}).
+Current Exact Map Focus: ${activeCityName} (Exact GPS Coordinates: ${center.lat.toFixed(6)}, ${center.lng.toFixed(6)} / ${formatCoordinate(center.lat, center.lng)}).
 Guidelines:
-1. Ground your answers in real-time Google Maps and Google Search data for ${activeCityName} and the surrounding coordinates.
-2. Mention specific place names clearly so the interactive map can highlight them for the user.
-3. Include practical details such as neighborhood context, why a place stands out, and what to check before visiting.
+1. Ground your answers in real-time Google Maps and Google Search data for ${activeCityName} and the exact surrounding coordinates (${center.lat.toFixed(6)}, ${center.lng.toFixed(6)}).
+2. Mention specific place names and exact street addresses clearly so the interactive map can highlight them for the user.
+3. Include practical details such as neighborhood context, walking distance from the user's exact coordinates, why a place stands out, and what to check before visiting.
 4. Keep responses well-structured with concise sections or bullet points (around 120-220 words unless asked for a detailed itinerary).`;
 }
 
@@ -776,3 +776,412 @@ export function resolveChatLayoutConfig(mode: ChatLayoutMode): ChatLayoutConfig 
       };
   }
 }
+
+export type UserLocationSource =
+  | 'gps'
+  | 'pinpoint'
+  | 'cached'
+  | 'timezone'
+  | 'fallback';
+
+export interface ResolvedUserLocation {
+  id: string;
+  name: string;
+  center: LatLngLiteral;
+  zoom: number;
+  initialSearchQuery: string;
+  source: UserLocationSource;
+  localityLabel: string;
+  exactAddress?: string;
+  accuracyMeters?: number;
+  isUserLocation: boolean;
+}
+
+/**
+ * Formats latitude and longitude to high-precision 6 decimal places (~0.11m exact GPS precision).
+ */
+export function formatExactCoordinate(
+  lat: number,
+  lng: number,
+  decimals = 6
+): string {
+  const latDir = lat >= 0 ? 'N' : 'S';
+  const lngDir = lng >= 0 ? 'E' : 'W';
+  return `${Math.abs(lat).toFixed(decimals)}°${latDir}, ${Math.abs(lng).toFixed(decimals)}°${lngDir}`;
+}
+
+/**
+ * Parses a raw coordinate string (e.g. "37.7955, -122.3937" or "47.606200, -122.332100") into a LatLngLiteral.
+ */
+export function parseCoordinateInput(input: string): LatLngLiteral | null {
+  if (!input || !input.trim()) return null;
+  const cleaned = input.trim();
+  const match = cleaned.match(
+    /^([+-]?\d+(?:\.\d+)?)\s*[,;\s]\s*([+-]?\d+(?:\.\d+)?)$/
+  );
+  if (!match) return null;
+  const lat = Number(match[1]);
+  const lng = Number(match[2]);
+  if (
+    Number.isNaN(lat) ||
+    Number.isNaN(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
+    return null;
+  }
+  return {
+    lat: Number(lat.toFixed(6)),
+    lng: Number(lng.toFixed(6)),
+  };
+}
+
+/**
+ * Extracts a clean street-level address from a Google Maps formattedAddress
+ * (e.g., "1 Ferry Building, San Francisco, CA 94111, USA" -> "1 Ferry Building, San Francisco, CA 94111").
+ */
+export function extractExactStreetAddress(
+  formattedAddress: string
+): string | null {
+  if (!formattedAddress || !formattedAddress.trim()) return null;
+  const parts = formattedAddress
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return null;
+  if (
+    parts.length >= 3 &&
+    /^(USA|United States|UK|United Kingdom|Canada|Japan|Australia)$/i.test(
+      parts[parts.length - 1]
+    )
+  ) {
+    return parts.slice(0, -1).join(', ');
+  }
+  return parts.join(', ');
+}
+
+const KNOWN_LOCALITY_HUBS: Array<{
+  name: string;
+  exactAddress: string;
+  center: LatLngLiteral;
+  timeZones: string[];
+}> = [
+  {
+    name: 'San Francisco, CA',
+    exactAddress: '1 Ferry Building, Embarcadero, San Francisco, CA 94111',
+    center: { lat: 37.7955, lng: -122.3937 },
+    timeZones: ['America/Los_Angeles', 'US/Pacific'],
+  },
+  {
+    name: 'New York, NY',
+    exactAddress: 'Washington Square Park, Greenwich Village, New York, NY 10012',
+    center: { lat: 40.7308, lng: -73.9973 },
+    timeZones: ['America/New_York', 'US/Eastern'],
+  },
+  {
+    name: 'Chicago, IL',
+    exactAddress: '201 E Randolph St, Millennium Park, Chicago, IL 60602',
+    center: { lat: 41.8826, lng: -87.6226 },
+    timeZones: ['America/Chicago', 'US/Central'],
+  },
+  {
+    name: 'Denver, CO',
+    exactAddress: '1701 Wynkoop St, Union Station, Denver, CO 80202',
+    center: { lat: 39.7392, lng: -104.9903 },
+    timeZones: ['America/Denver', 'US/Mountain'],
+  },
+  {
+    name: 'Phoenix, AZ',
+    exactAddress: '200 W Washington St, Downtown Phoenix, AZ 85003',
+    center: { lat: 33.4484, lng: -112.074 },
+    timeZones: ['America/Phoenix'],
+  },
+  {
+    name: 'Los Angeles, CA',
+    exactAddress: '200 N Spring St, Downtown Los Angeles, CA 90012',
+    center: { lat: 34.0522, lng: -118.2437 },
+    timeZones: [],
+  },
+  {
+    name: 'Seattle, WA',
+    exactAddress: '85 Pike St, Pike Place Market, Seattle, WA 98101',
+    center: { lat: 47.6062, lng: -122.3321 },
+    timeZones: [],
+  },
+  {
+    name: 'Austin, TX',
+    exactAddress: '1100 Congress Ave, Downtown Austin, TX 78701',
+    center: { lat: 30.2672, lng: -97.7431 },
+    timeZones: [],
+  },
+  {
+    name: 'Boston, MA',
+    exactAddress: '1 City Hall Square, Boston, MA 02201',
+    center: { lat: 42.3601, lng: -71.0589 },
+    timeZones: [],
+  },
+  {
+    name: 'Miami, FL',
+    exactAddress: '401 Biscayne Blvd, Bayside, Miami, FL 33132',
+    center: { lat: 25.7617, lng: -80.1918 },
+    timeZones: [],
+  },
+  {
+    name: 'Washington, DC',
+    exactAddress: '1600 Pennsylvania Ave NW, Washington, DC 20500',
+    center: { lat: 38.9072, lng: -77.0369 },
+    timeZones: [],
+  },
+  {
+    name: 'Toronto, ON',
+    exactAddress: '100 Queen St W, Downtown Toronto, ON M5H 2N2',
+    center: { lat: 43.6532, lng: -79.3832 },
+    timeZones: ['America/Toronto'],
+  },
+  {
+    name: 'Vancouver, BC',
+    exactAddress: '800 Robson St, Vancouver, BC V6Z 3B7',
+    center: { lat: 49.2827, lng: -123.1207 },
+    timeZones: ['America/Vancouver'],
+  },
+  {
+    name: 'London, UK',
+    exactAddress: 'Bankside, Southwark, London SE1 9TG, UK',
+    center: { lat: 51.5079, lng: -0.0994 },
+    timeZones: ['Europe/London', 'GMT', 'Etc/UTC', 'UTC'],
+  },
+  {
+    name: 'Paris, France',
+    exactAddress: 'Place de l’Hôtel de Ville, 75004 Paris, France',
+    center: { lat: 48.8566, lng: 2.3522 },
+    timeZones: ['Europe/Paris'],
+  },
+  {
+    name: 'Berlin, Germany',
+    exactAddress: 'Alexanderplatz 1, 10178 Berlin, Germany',
+    center: { lat: 52.52, lng: 13.405 },
+    timeZones: ['Europe/Berlin'],
+  },
+  {
+    name: 'Tokyo, Japan',
+    exactAddress: '2-2-1 Dogenzaka, Shibuya City, Tokyo 150-0043, Japan',
+    center: { lat: 35.6595, lng: 139.7004 },
+    timeZones: ['Asia/Tokyo'],
+  },
+  {
+    name: 'Seoul, South Korea',
+    exactAddress: '110 Sejong-daero, Jung-gu, Seoul, South Korea',
+    center: { lat: 37.5665, lng: 126.978 },
+    timeZones: ['Asia/Seoul'],
+  },
+  {
+    name: 'Singapore',
+    exactAddress: '10 Bayfront Ave, Marina Bay, Singapore 018956',
+    center: { lat: 1.3521, lng: 103.8198 },
+    timeZones: ['Asia/Singapore'],
+  },
+  {
+    name: 'Sydney, Australia',
+    exactAddress: 'Bennelong Point, Sydney NSW 2000, Australia',
+    center: { lat: -33.8688, lng: 151.2093 },
+    timeZones: ['Australia/Sydney'],
+  },
+];
+
+/**
+ * Finds the nearest known metropolitan locality within maxRadiusKm, or falls back to formatted coordinates.
+ */
+export function findNearestKnownLocality(
+  coords: LatLngLiteral,
+  maxRadiusKm = 65
+): string {
+  let closestName = '';
+  let minDistance = Infinity;
+
+  for (const hub of KNOWN_LOCALITY_HUBS) {
+    const dist = calculateHaversineDistanceKm(coords, hub.center);
+    if (dist < minDistance) {
+      minDistance = dist;
+      closestName = hub.name;
+    }
+  }
+
+  if (closestName && minDistance <= maxRadiusKm) {
+    return closestName;
+  }
+
+  return formatCoordinate(coords.lat, coords.lng);
+}
+
+/**
+ * Extracts a clean locality label (e.g. "San Francisco, CA" or "London, UK") from a Google Places formattedAddress.
+ */
+export function extractLocalityFromFormattedAddress(
+  formattedAddress: string
+): string | null {
+  if (!formattedAddress || !formattedAddress.trim()) return null;
+  const parts = formattedAddress
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (parts.length < 2) return null;
+
+  // Typical US address: "1 Ferry Building, San Francisco, CA 94111, USA"
+  if (parts.length >= 3) {
+    const stateZipPart = parts[parts.length - 2];
+    const cityPart = parts[parts.length - 3];
+    const usStateMatch = stateZipPart.match(/^([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$/);
+    if (usStateMatch && cityPart) {
+      return `${cityPart}, ${usStateMatch[1]}`;
+    }
+  }
+
+  // International address: "... , Shibuya City, Tokyo 150-0002, Japan"
+  const countryPart = parts[parts.length - 1].replace(/\d+/g, '').trim();
+  const regionPart = parts[parts.length - 2]
+    .replace(/\b\d[\d\s-]*\b/g, '')
+    .trim();
+  if (regionPart && countryPart) {
+    return `${regionPart}, ${countryPart}`;
+  }
+
+  return null;
+}
+
+/**
+ * Builds a CityViewportPreset-compatible object representing the user's exact location.
+ */
+export function buildUserLocationPreset(params: {
+  coords: LatLngLiteral;
+  localityName?: string | null;
+  exactAddress?: string | null;
+  accuracyMeters?: number;
+  source?: UserLocationSource;
+  zoom?: number;
+}): ResolvedUserLocation {
+  const {
+    coords,
+    localityName,
+    exactAddress,
+    accuracyMeters,
+    source = 'gps',
+    zoom = 16,
+  } = params;
+  const resolvedLocality =
+    localityName && localityName.trim().length > 0
+      ? localityName.trim()
+      : findNearestKnownLocality(coords);
+
+  const cleanedExactAddress =
+    exactAddress && exactAddress.trim().length > 0
+      ? exactAddress.trim()
+      : undefined;
+
+  const isCoordinateLabel = resolvedLocality.includes('°');
+  const queryContext = cleanedExactAddress
+    ? `near ${cleanedExactAddress}`
+    : isCoordinateLabel
+    ? 'nearby'
+    : `near ${resolvedLocality}`;
+
+  const displayTarget = cleanedExactAddress || resolvedLocality;
+
+  return {
+    id: 'user-location',
+    name: `My Location (${displayTarget})`,
+    center: {
+      lat: Number(coords.lat.toFixed(6)),
+      lng: Number(coords.lng.toFixed(6)),
+    },
+    zoom,
+    initialSearchQuery: `specialty coffee, top rated restaurants and landmarks ${queryContext}`,
+    source,
+    localityLabel: resolvedLocality,
+    exactAddress: cleanedExactAddress,
+    accuracyMeters:
+      typeof accuracyMeters === 'number' && !Number.isNaN(accuracyMeters)
+        ? Math.max(1, Math.round(accuracyMeters))
+        : undefined,
+    isUserLocation: true,
+  };
+}
+
+/**
+ * Resolves the initial default location preset to the user's exact location on startup.
+ * Prioritizes cached user GPS coordinates from localStorage, then infers from the user's
+ * browser timezone, and finally falls back to a default user location preset until live
+ * navigator.geolocation resolves.
+ */
+export function resolveInitialUserLocationPreset(options?: {
+  cachedJson?: string | null;
+  timeZone?: string;
+}): ResolvedUserLocation {
+  if (options?.cachedJson) {
+    try {
+      const parsed = JSON.parse(options.cachedJson);
+      if (
+        parsed &&
+        typeof parsed.lat === 'number' &&
+        typeof parsed.lng === 'number' &&
+        !Number.isNaN(parsed.lat) &&
+        !Number.isNaN(parsed.lng)
+      ) {
+        return buildUserLocationPreset({
+          coords: { lat: parsed.lat, lng: parsed.lng },
+          localityName:
+            typeof parsed.localityLabel === 'string'
+              ? parsed.localityLabel
+              : undefined,
+          exactAddress:
+            typeof parsed.exactAddress === 'string'
+              ? parsed.exactAddress
+              : undefined,
+          accuracyMeters:
+            typeof parsed.accuracyMeters === 'number'
+              ? parsed.accuracyMeters
+              : undefined,
+          source: 'cached',
+          zoom: 16,
+        });
+      }
+    } catch {
+      // Ignore malformed JSON cache
+    }
+  }
+
+  const tz = options?.timeZone?.trim() || '';
+  if (tz) {
+    const matchedHub = KNOWN_LOCALITY_HUBS.find((h) =>
+      h.timeZones.includes(tz)
+    );
+    if (matchedHub) {
+      return buildUserLocationPreset({
+        coords: matchedHub.center,
+        localityName: matchedHub.name,
+        exactAddress: matchedHub.exactAddress,
+        source: 'timezone',
+        zoom: 16,
+      });
+    }
+  }
+
+  return buildUserLocationPreset({
+    coords: KNOWN_LOCALITY_HUBS[0].center,
+    localityName: KNOWN_LOCALITY_HUBS[0].name,
+    exactAddress: KNOWN_LOCALITY_HUBS[0].exactAddress,
+    source: 'fallback',
+    zoom: 16,
+  });
+}
+
+/**
+ * Constructs the standard initial welcome greeting for AtlasPulse.
+ * Real-time Google Maps and Google Search grounding spans all over the world.
+ */
+export function buildInitialGreetingMessage(_cityName?: string): string {
+  return `Welcome to **AtlasPulse**. I am grounded in real-time **Google Maps** and **Google Search** data all over the world.\n\nSwitch between **8 specialized AI bots** above—including **Local Concierge**, **Culinary Scout**, **Urban Historian**, **Mobility & Access**, **Nightlife & Music**, **Nature & Trails**, **Remote Work Scout**, and **Family & Access**—to explore verified places and plot them directly on the map.`;
+}
+

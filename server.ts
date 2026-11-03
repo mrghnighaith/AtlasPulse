@@ -50,6 +50,54 @@ async function startServer() {
     res.json({ status: 'ok' });
   });
 
+  app.get('/api/reverse-geocode', async (req, res) => {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
+      res.status(400).json({ error: 'Invalid lat/lng parameters' });
+      return;
+    }
+
+    const mapsKey = process.env.VITE_GOOGLE_MAPS_API_KEY || '';
+    if (!mapsKey) {
+      res.json({ exactAddress: null, localityLabel: null });
+      return;
+    }
+
+    try {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat.toFixed(6)},${lng.toFixed(6)}&key=${encodeURIComponent(mapsKey)}`;
+      const response = await fetch(url);
+      const data: any = await response.json();
+      if (data?.status === 'OVER_QUERY_LIMIT') {
+        res.status(429).json({ status: 'RESOURCE_EXHAUSTED', exactAddress: null });
+        return;
+      }
+      if (data?.status === 'OK' && Array.isArray(data.results) && data.results.length > 0) {
+        const primary = data.results[0];
+        const formattedAddress = primary.formatted_address || null;
+        let locality = '';
+        let adminArea = '';
+        for (const comp of primary.address_components || []) {
+          if (comp.types?.includes('locality')) {
+            locality = comp.long_name;
+          } else if (comp.types?.includes('administrative_area_level_1')) {
+            adminArea = comp.short_name;
+          }
+        }
+        const localityLabel =
+          locality && adminArea ? `${locality}, ${adminArea}` : locality || null;
+        res.json({
+          exactAddress: formattedAddress,
+          localityLabel,
+        });
+        return;
+      }
+      res.json({ exactAddress: null, localityLabel: null });
+    } catch {
+      res.json({ exactAddress: null, localityLabel: null });
+    }
+  });
+
   app.post('/api/chat', async (req, res) => {
     const {
       messages = [],
